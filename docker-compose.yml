@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  sheets-ai-agent:
+    build: .
+    image: chatbot-sheet:latest
+    container_name: chatbot-sheet-container
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./cache:/app/cache
+    restart: unless-stopped
