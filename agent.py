@@ -11,10 +11,11 @@ import re
 import uuid
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 import gspread
+from pydantic import BaseModel, Field, field_validator
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 
@@ -28,6 +29,107 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Pydantic Tool Input Schemas & Injection Guardrails (Architecture §7)
+# ---------------------------------------------------------------------------
+FORBIDDEN_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "%")
+FORBIDDEN_IDENTIFIER_CHARS = (";", "--", "/*", "*/", "<script", "javascript:")
+
+
+def validate_no_formula_injection(value: Any, field_name: str) -> Any:
+    """Reject values starting with spreadsheet formula injection prefixes."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if any(stripped.startswith(prefix) for prefix in FORBIDDEN_FORMULA_PREFIXES):
+            raise ValueError(
+                f"Formula injection rejected in field '{field_name}': cannot start with formula prefix '{stripped[0]}'."
+            )
+        if any(char in value for char in FORBIDDEN_IDENTIFIER_CHARS):
+            raise ValueError(f"Unsafe characters detected in field '{field_name}'.")
+    return value
+
+
+class ReadSheetInput(BaseModel):
+    sheet_name: str = Field(..., description="Name of the worksheet to read.")
+    query: Optional[str] = Field(default="all rows", description="Filter description or row query.")
+
+    @field_validator("sheet_name")
+    def check_sheet_name(cls, v):
+        return validate_no_formula_injection(v, "sheet_name")
+
+
+class FilterAndAggregateInput(BaseModel):
+    sheet_name: str = Field(..., description="Name of worksheet to aggregate.")
+    pandas_code: str = Field(..., description="Safe pandas expression on variable 'df'.")
+
+    @field_validator("sheet_name")
+    def check_sheet_name(cls, v):
+        return validate_no_formula_injection(v, "sheet_name")
+
+    @field_validator("pandas_code")
+    def check_pandas_code(cls, v):
+        blocked = [
+            "import", "os", "sys", "open", "eval", "exec", "__", "subprocess",
+            "globals", "locals", "getattr", "setattr", "delattr", "builtin",
+        ]
+        if any(kw in v for kw in blocked):
+            raise ValueError("Unsafe code detected. Only safe pandas operations on 'df' are allowed.")
+        return v
+
+
+class UpdateCellInput(BaseModel):
+    sheet_name: str = Field(..., description="Target worksheet name.")
+    id_column: str = Field(..., description="Column header to search for the identifier.")
+    id_value: Union[str, int, float] = Field(..., description="Identifier value to match.")
+    update_column: str = Field(..., description="Column header whose value you want to update.")
+    new_value: Union[str, int, float] = Field(..., description="New value to write.")
+
+    @field_validator("sheet_name", "id_column", "update_column")
+    def check_identifiers(cls, v, info):
+        return validate_no_formula_injection(v, info.field_name)
+
+    @field_validator("new_value")
+    def check_new_value(cls, v):
+        return validate_no_formula_injection(v, "new_value")
+
+
+class DeleteRowInput(BaseModel):
+    sheet_name: str = Field(..., description="Target worksheet name.")
+    id_column: str = Field(..., description="Column name used to locate the row for deletion.")
+    id_value: Union[str, int, float] = Field(..., description="Identifier value to match.")
+
+    @field_validator("sheet_name", "id_column")
+    def check_identifiers(cls, v, info):
+        return validate_no_formula_injection(v, info.field_name)
+
+
+class SummarizeSheetInput(BaseModel):
+    sheet_name: str = Field(..., description="Name of worksheet to summarize.")
+
+    @field_validator("sheet_name")
+    def check_sheet_name(cls, v):
+        return validate_no_formula_injection(v, "sheet_name")
+
+
+class FindAnomaliesInput(BaseModel):
+    sheet_name: str = Field(..., description="Name of worksheet.")
+    column_name: str = Field(..., description="Numeric column header to check for IQR outliers.")
+
+    @field_validator("sheet_name", "column_name")
+    def check_identifiers(cls, v, info):
+        return validate_no_formula_injection(v, info.field_name)
+
+
+class CrossSheetJoinInput(BaseModel):
+    sheet1: str = Field(..., description="First worksheet name.")
+    sheet2: str = Field(..., description="Second worksheet name.")
+    on_column: str = Field(..., description="Common column name to join on.")
+
+    @field_validator("sheet1", "sheet2", "on_column")
+    def check_identifiers(cls, v, info):
+        return validate_no_formula_injection(v, info.field_name)
+
 
 # ---------------------------------------------------------------------------
 # Google Sheets Client
@@ -369,27 +471,59 @@ class SheetSenseAgent:
         self._sessions: Dict[str, List[Dict[str, str]]] = {}
 
     def _build_tools(self):
-        """Wrap SheetTools methods as LangChain-compatible tool callables."""
+        """Wrap SheetTools methods as LangChain-compatible tool callables with Pydantic schemas."""
         st = self.sheet_tools
 
         from langchain_core.tools import StructuredTool
 
-        def make_tool(name, func, description):
-            return StructuredTool.from_function(
-                func=func,
-                name=name,
-                description=description,
-            )
-
         return [
-            make_tool("read_sheet",           st.read_sheet,           st.read_sheet.__doc__),
-            make_tool("filter_and_aggregate", st.filter_and_aggregate, st.filter_and_aggregate.__doc__),
-            make_tool("update_cell",          st.update_cell,          st.update_cell.__doc__),
-            make_tool("delete_row",           st.delete_row,           st.delete_row.__doc__),
-            make_tool("summarize_sheet",      st.summarize_sheet,      st.summarize_sheet.__doc__),
-            make_tool("list_sheets",          st.list_sheets,          st.list_sheets.__doc__),
-            make_tool("find_anomalies",       st.find_anomalies,       st.find_anomalies.__doc__),
-            make_tool("cross_sheet_join",     st.cross_sheet_join,     st.cross_sheet_join.__doc__),
+            StructuredTool.from_function(
+                func=st.read_sheet,
+                name="read_sheet",
+                description=st.read_sheet.__doc__,
+                args_schema=ReadSheetInput,
+            ),
+            StructuredTool.from_function(
+                func=st.filter_and_aggregate,
+                name="filter_and_aggregate",
+                description=st.filter_and_aggregate.__doc__,
+                args_schema=FilterAndAggregateInput,
+            ),
+            StructuredTool.from_function(
+                func=st.update_cell,
+                name="update_cell",
+                description=st.update_cell.__doc__,
+                args_schema=UpdateCellInput,
+            ),
+            StructuredTool.from_function(
+                func=st.delete_row,
+                name="delete_row",
+                description=st.delete_row.__doc__,
+                args_schema=DeleteRowInput,
+            ),
+            StructuredTool.from_function(
+                func=st.summarize_sheet,
+                name="summarize_sheet",
+                description=st.summarize_sheet.__doc__,
+                args_schema=SummarizeSheetInput,
+            ),
+            StructuredTool.from_function(
+                func=st.list_sheets,
+                name="list_sheets",
+                description=st.list_sheets.__doc__,
+            ),
+            StructuredTool.from_function(
+                func=st.find_anomalies,
+                name="find_anomalies",
+                description=st.find_anomalies.__doc__,
+                args_schema=FindAnomaliesInput,
+            ),
+            StructuredTool.from_function(
+                func=st.cross_sheet_join,
+                name="cross_sheet_join",
+                description=st.cross_sheet_join.__doc__,
+                args_schema=CrossSheetJoinInput,
+            ),
         ]
 
     def _get_history(self, session_id: Optional[str]) -> List:
