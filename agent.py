@@ -16,13 +16,11 @@ import gspread
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 
-# --- LangChain Core ---
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain.tools import Tool
-from langchain_core.prompts import PromptTemplate
-from langchain_core.messages import HumanMessage, AIMessage
+# --- LangGraph / LangChain Core (LangChain >=1.0 dropped AgentExecutor) ---
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import tool as lc_tool
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.memory import ConversationBufferWindowMemory
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -268,44 +266,28 @@ class SheetTools:
 
 
 # ---------------------------------------------------------------------------
-# SheetSense Agent — LangChain ReAct Agent
+# SheetSense Agent — LangGraph ReAct Agent
 # ---------------------------------------------------------------------------
-REACT_PROMPT = PromptTemplate.from_template(
-    """You are SheetSense AI, an expert data analyst agent that queries and updates
-live Google Sheets data using plain English. You have access to the following tools:
-
-{tools}
-
-Use the following format STRICTLY:
-
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action (always valid JSON)
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-Begin!
-
-Previous conversation:
-{chat_history}
-
-Question: {input}
-Thought: {agent_scratchpad}"""
+SYSTEM_PROMPT = (
+    "You are SheetSense AI, an expert data analyst agent that queries and updates "
+    "live Google Sheets data using plain English. "
+    "When asked to delete or update data, ALWAYS return a pending-action object and "
+    "never execute writes directly — the confirmation endpoint handles actual writes. "
+    "Always reason step by step before calling a tool. "
+    "Return a clear, concise final answer after you have all the information you need."
 )
 
 
 class SheetSenseAgent:
     """
-    LangChain ReAct agent that reasons over live Google Sheets data.
+    LangGraph ReAct agent that reasons over live Google Sheets data.
 
     Architecture:
       - LLM: Google Gemini via langchain-google-genai
       - Tools: SheetTools (read, filter, update, delete, summarize, anomaly detection, join)
-      - Memory: ConversationBufferWindowMemory (last 10 turns per session)
-      - Executor: LangChain AgentExecutor with max_iterations=5
+      - Memory: in-process dict of last 10 messages per session
+                (NOTE: will be replaced with Redis-backed SessionStore in Day 3 / Phase 2)
+      - Executor: LangGraph create_react_agent (max_iterations=5 via recursion_limit)
     """
 
     def __init__(self):
@@ -322,37 +304,67 @@ class SheetSenseAgent:
             model=os.getenv("GEMINI_MODEL", "gemini-1.5-pro-latest"),
             google_api_key=os.getenv("GEMINI_API_KEY"),
             temperature=0.1,
-            convert_system_message_to_human=True,
         )
 
-        # --- Tool registry ---
-        self.tools = [
-            Tool(name="read_sheet",            func=self.sheet_tools.read_sheet,           description=self.sheet_tools.read_sheet.__doc__),
-            Tool(name="filter_and_aggregate",  func=self.sheet_tools.filter_and_aggregate, description=self.sheet_tools.filter_and_aggregate.__doc__),
-            Tool(name="update_cell",           func=self.sheet_tools.update_cell,          description=self.sheet_tools.update_cell.__doc__),
-            Tool(name="delete_row",            func=self.sheet_tools.delete_row,           description=self.sheet_tools.delete_row.__doc__),
-            Tool(name="summarize_sheet",       func=self.sheet_tools.summarize_sheet,      description=self.sheet_tools.summarize_sheet.__doc__),
-            Tool(name="list_sheets",           func=self.sheet_tools.list_sheets,          description=self.sheet_tools.list_sheets.__doc__),
-            Tool(name="find_anomalies",        func=self.sheet_tools.find_anomalies,       description=self.sheet_tools.find_anomalies.__doc__),
-            Tool(name="cross_sheet_join",      func=self.sheet_tools.cross_sheet_join,     description=self.sheet_tools.cross_sheet_join.__doc__),
+        # --- Tool registry (plain callables decorated as LangChain tools) ---
+        self._lc_tools = self._build_tools()
+
+        # --- LangGraph ReAct agent ---
+        self._agent = create_react_agent(
+            model=self.llm,
+            tools=self._lc_tools,
+            prompt=SYSTEM_PROMPT,
+        )
+
+        # --- Per-session message history (in-process; replaced with Redis in Day 3) ---
+        # Key: session_id -> list of last ≤10 {role, content} dicts
+        self._sessions: Dict[str, List[Dict[str, str]]] = {}
+
+    def _build_tools(self):
+        """Wrap SheetTools methods as LangChain-compatible tool callables."""
+        st = self.sheet_tools
+
+        from langchain_core.tools import StructuredTool
+
+        def make_tool(name, func, description):
+            return StructuredTool.from_function(
+                func=func,
+                name=name,
+                description=description,
+            )
+
+        return [
+            make_tool("read_sheet",           st.read_sheet,           st.read_sheet.__doc__),
+            make_tool("filter_and_aggregate", st.filter_and_aggregate, st.filter_and_aggregate.__doc__),
+            make_tool("update_cell",          st.update_cell,          st.update_cell.__doc__),
+            make_tool("delete_row",           st.delete_row,           st.delete_row.__doc__),
+            make_tool("summarize_sheet",      st.summarize_sheet,      st.summarize_sheet.__doc__),
+            make_tool("list_sheets",          st.list_sheets,          st.list_sheets.__doc__),
+            make_tool("find_anomalies",       st.find_anomalies,       st.find_anomalies.__doc__),
+            make_tool("cross_sheet_join",     st.cross_sheet_join,     st.cross_sheet_join.__doc__),
         ]
 
-        # --- Per-session memory store ---
-        self._sessions: Dict[str, ConversationBufferWindowMemory] = {}
+    def _get_history(self, session_id: Optional[str]) -> List:
+        """Return the stored message history for a session as LangChain message objects."""
+        key = session_id or "__default__"
+        history = self._sessions.get(key, [])
+        messages = []
+        for turn in history[-10:]:  # last 10 turns
+            if turn["role"] == "human":
+                messages.append(HumanMessage(content=turn["content"]))
+            else:
+                messages.append(AIMessage(content=turn["content"]))
+        return messages
 
-        # --- Build agent ---
-        self._react_agent = create_react_agent(self.llm, self.tools, REACT_PROMPT)
-
-    def _get_memory(self, session_id: Optional[str]) -> ConversationBufferWindowMemory:
-        """Return or create a conversation memory for the given session."""
+    def _save_turn(self, session_id: Optional[str], human: str, ai: str):
+        """Append a completed turn to session history (capped at 10 turns)."""
         key = session_id or "__default__"
         if key not in self._sessions:
-            self._sessions[key] = ConversationBufferWindowMemory(
-                k=10,
-                memory_key="chat_history",
-                return_messages=False,
-            )
-        return self._sessions[key]
+            self._sessions[key] = []
+        self._sessions[key].append({"role": "human", "content": human})
+        self._sessions[key].append({"role": "ai", "content": ai})
+        # Keep only last 20 messages (= 10 turns)
+        self._sessions[key] = self._sessions[key][-20:]
 
     def run(
         self,
@@ -375,33 +387,40 @@ class SheetSenseAgent:
                 "intermediate_steps": [...],
             }
         """
-        memory = self._get_memory(session_id)
-
         # Prepend a sheet hint if provided
         query = user_message
         if sheet_name:
             query = f"[Active sheet hint: '{sheet_name}'] {user_message}"
 
-        executor = AgentExecutor(
-            agent=self._react_agent,
-            tools=self.tools,
-            memory=memory,
-            max_iterations=5,
-            handle_parsing_errors=True,
-            return_intermediate_steps=True,
-            verbose=True,
-        )
+        # Build message list: history + new human turn
+        history = self._get_history(session_id)
+        messages = history + [HumanMessage(content=query)]
 
         try:
-            result = executor.invoke({"input": query})
-            tools_used = [step[0].tool for step in result.get("intermediate_steps", [])]
+            result = self._agent.invoke(
+                {"messages": messages},
+                config={"recursion_limit": 12},  # ~5 ReAct iterations
+            )
+            # Extract the final AI response
+            ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
+            answer = ai_messages[-1].content if ai_messages else "No answer produced."
+
+            # Extract tool calls for observability
+            tools_used = []
+            intermediate = []
+            for m in result["messages"]:
+                if hasattr(m, "tool_calls") and m.tool_calls:
+                    for tc in m.tool_calls:
+                        tools_used.append(tc["name"])
+                        intermediate.append({"tool": tc["name"], "observation": str(tc.get("args", ""))[:500]})
+
+            # Persist turn to session memory
+            self._save_turn(session_id, user_message, answer)
+
             return {
-                "answer": result.get("output", "No answer produced."),
+                "answer": answer,
                 "tools_used": tools_used,
-                "intermediate_steps": [
-                    {"tool": step[0].tool, "observation": str(step[1])[:500]}
-                    for step in result.get("intermediate_steps", [])
-                ],
+                "intermediate_steps": intermediate,
             }
         except Exception as e:
             logger.error(f"Agent execution error: {e}", exc_info=True)

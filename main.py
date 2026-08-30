@@ -59,6 +59,8 @@ async def get_api_key(key: Optional[str] = Security(api_key_header)):
         raise HTTPException(status_code=403, detail="Invalid or missing API key.")
     return key
 
+from database import init_db
+
 # ---------------------------------------------------------------------------
 # Singleton agent (loaded once at startup)
 # ---------------------------------------------------------------------------
@@ -67,6 +69,8 @@ _agent: Optional[SheetSenseAgent] = None
 @app.on_event("startup")
 async def startup_event():
     global _agent
+    logger.info("Initializing SQLite database tables …")
+    init_db()
     logger.info("Initializing SheetSense AI Agent …")
     _agent = SheetSenseAgent()
     logger.info("Agent ready.")

@@ -1,0 +1,22 @@
+order_id,customer_id,product,category,quantity,unit_price,price,status,order_date
+ORD-1001,CUST-101,Mechanical Keyboard,Electronics,2,89.99,179.98,completed,2026-01-15
+ORD-1002,CUST-102,Wireless Mouse,Accessories,3,29.99,89.97,completed,2026-01-18
+ORD-1003,CUST-103,USB-C Hub,Accessories,1,45.50,45.50,completed,2026-01-22
+ORD-1004,CUST-101,4K Monitor,Electronics,1,399.00,399.00,completed,2026-02-01
+ORD-1005,CUST-104,Noise-Cancelling Headphones,Audio,2,199.99,399.98,completed,2026-02-05
+ORD-1006,CUST-105,Webcam 1080p,Accessories,4,59.00,236.00,shipped,2026-02-12
+ORD-1007,CUST-102,Laptop Stand,Accessories,2,34.50,69.00,completed,2026-02-18
+ORD-1008,CUST-106,Bluetooth Speaker,Audio,1,79.99,79.99,completed,2026-02-24
+ORD-1009,CUST-107,Desk Pad,Accessories,5,19.99,99.95,completed,2026-03-02
+ORD-1010,CUST-103,External SSD 1TB,Electronics,2,119.00,238.00,completed,2026-03-05
+ORD-1011,CUST-108,Ergonomic Chair,Furniture,1,349.00,349.00,shipped,2026-03-10
+ORD-1012,CUST-101,Monitor Arm,Accessories,1,65.00,65.00,completed,2026-03-12
+ORD-1013,CUST-105,Wireless Charger,Accessories,3,25.00,75.00,pending,2026-03-15
+ORD-1014,CUST-109,Microphone USB,Audio,1,129.99,129.99,completed,2026-03-18
+ORD-1015,CUST-110,Server Rack Supercluster,Electronics,1,45000.00,45000.00,completed,2026-03-20
+ORD-1016,CUST-104,Screen Cleaner Kit,Accessories,2,12.50,25.00,completed,2026-03-22
+ORD-1017,CUST-106,HDMI Cable 2m,Accessories,4,9.99,39.96,completed,2026-03-25
+ORD-1018,CUST-107,Graphics Tablet,Electronics,1,249.99,249.99,completed,2026-03-27
+ORD-1019,CUST-102,Smart Power Strip,Electronics,2,39.99,79.98,pending,2026-03-28
+ORD-1020,CUST-108,Keycap Set,Accessories,1,45.00,45.00,completed,2026-03-29
+ORD-4471,CUST-103,Drafting Tablet Pen,Accessories,1,29.99,29.99,pending,2026-03-30
