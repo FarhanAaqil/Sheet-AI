@@ -59,7 +59,7 @@ async def get_api_key(key: Optional[str] = Security(api_key_header)):
         raise HTTPException(status_code=403, detail="Invalid or missing API key.")
     return key
 
-from database import init_db
+import database
 
 # ---------------------------------------------------------------------------
 # Singleton agent (loaded once at startup)
@@ -183,3 +183,155 @@ def sheet_schema(
     if not schema:
         raise HTTPException(status_code=404, detail=f"Sheet '{sheet_name}' not found.")
     return schema
+
+
+# ---------------------------------------------------------------------------
+# Confirmation Gate Endpoints (Architecture §2, §6)
+# ---------------------------------------------------------------------------
+import time
+from datetime import datetime, timezone
+import sheets_writer
+
+
+class ConfirmActionResponse(BaseModel):
+    status: str
+    action_id: str
+    tool_name: str
+    result: Dict[str, Any]
+    executed_at: str
+
+
+@app.post(
+    "/actions/{action_id}/confirm",
+    response_model=ConfirmActionResponse,
+    tags=["Safety Guardrail"],
+)
+def confirm_action(
+    action_id: str,
+    agent: SheetSenseAgent = Depends(get_agent),
+    _key: str = Depends(get_api_key),
+):
+    """
+    CONFIRMATION GATE: The ONLY code path that executes destructive Google Sheets writes.
+
+    1. Validates that the action exists, is in 'pending' status, and has not expired (5-min TTL).
+    2. Calls isolated sheets_writer to execute the write/delete.
+    3. Updates action status to 'confirmed' and writes an audit log to tool_calls.
+    """
+    action = database.get_pending_action(action_id)
+    if not action:
+        raise HTTPException(status_code=404, detail=f"Action '{action_id}' not found.")
+
+    current_status = action["status"]
+    if current_status == "confirmed":
+        raise HTTPException(
+            status_code=410,
+            detail=f"Action '{action_id}' has already been confirmed and executed.",
+        )
+    if current_status == "rejected":
+        raise HTTPException(
+            status_code=410,
+            detail=f"Action '{action_id}' was previously rejected.",
+        )
+    if current_status != "pending":
+        raise HTTPException(
+            status_code=410,
+            detail=f"Action '{action_id}' is no longer pending (current status: '{current_status}').",
+        )
+
+    # Validate 5-minute TTL expiration
+    expires_at_str = action["expires_at"]
+    try:
+        expires_at = datetime.fromisoformat(expires_at_str)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > expires_at:
+            database.update_action_status(action_id, "expired")
+            raise HTTPException(
+                status_code=410,
+                detail=f"Action '{action_id}' has expired. Destructive actions must be confirmed within 5 minutes.",
+            )
+    except ValueError as e:
+        logger.error(f"Error parsing expires_at timestamp '{expires_at_str}': {e}")
+
+    # Execute the write operation through sheets_writer
+    start_time = time.time()
+    try:
+        target = json.loads(action["target_json"])
+        proposed_change = json.loads(action["proposed_change_json"])
+        tool_name = action["tool_name"]
+
+        write_result = sheets_writer.execute_action(
+            spreadsheet=agent.spreadsheet,
+            tool_name=tool_name,
+            target=target,
+            proposed_change=proposed_change,
+        )
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        # Update action status and write audit log
+        database.update_action_status(action_id, "confirmed")
+        database.log_tool_call(
+            tool_name=tool_name,
+            input_data={"target": target, "proposed_change": proposed_change},
+            output_data=write_result,
+            success=True,
+            latency_ms=latency_ms,
+            session_id=action.get("session_id"),
+        )
+
+        # Refresh in-memory DataFrame cache for target sheet
+        sheet_name = target.get("sheet_name")
+        if sheet_name:
+            agent.sheet_tools._refresh_sheet(sheet_name)
+
+        return ConfirmActionResponse(
+            status="confirmed",
+            action_id=action_id,
+            tool_name=tool_name,
+            result=write_result,
+            executed_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as e:
+        latency_ms = int((time.time() - start_time) * 1000)
+        database.log_tool_call(
+            tool_name=action.get("tool_name", "unknown"),
+            input_data=action.get("target_json"),
+            output_data=str(e),
+            success=False,
+            latency_ms=latency_ms,
+            session_id=action.get("session_id"),
+        )
+        logger.error(f"Failed to execute confirmed action '{action_id}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Write execution failed: {str(e)}",
+        )
+
+
+@app.post("/actions/{action_id}/reject", tags=["Safety Guardrail"])
+def reject_action(
+    action_id: str,
+    _key: str = Depends(get_api_key),
+):
+    """Cancel / reject a pending destructive action."""
+    action = database.get_pending_action(action_id)
+    if not action:
+        raise HTTPException(status_code=404, detail=f"Action '{action_id}' not found.")
+    if action["status"] != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot reject action '{action_id}' in state '{action['status']}'.",
+        )
+    database.update_action_status(action_id, "rejected")
+    return {"status": "rejected", "action_id": action_id}
+
+
+# ---------------------------------------------------------------------------
+# Observability & Metrics (Architecture §2, PRD FR-8)
+# ---------------------------------------------------------------------------
+@app.get("/metrics", tags=["Observability"])
+def metrics(_key: str = Depends(get_api_key)):
+    """Returns tool usage counts, error rates, average latency, and action counts."""
+    return database.get_metrics_summary()
+
