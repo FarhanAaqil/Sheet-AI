@@ -260,28 +260,22 @@ class AIAgent:
         except Exception as e: return f"Error creating visualization: {e}"
     
     def update_sheet(self, sheet_name: str, row_identifier_column: str, row_identifier_value: Any, column_to_update: str, new_value: Any) -> str:
-        """Updates a single cell in a specified sheet by finding a row using a unique identifier."""
-        try:
-            worksheet = self.spreadsheet.worksheet(sheet_name)
-            headers = worksheet.row_values(1)
-            id_col_index, update_col_index = headers.index(row_identifier_column) + 1, headers.index(column_to_update) + 1
-            cell = worksheet.find(str(row_identifier_value), in_column=id_col_index)
-            worksheet.update_cell(cell.row, update_col_index, new_value)
-            st.cache_data.clear()
-            return f"✅ Success: Updated '{column_to_update}' to '{new_value}' for row where '{row_identifier_column}' is '{row_identifier_value}'."
-        except Exception as e: return f"❌ Error updating sheet: {e}. The row or column might not exist."
+        """Stages a cell update as a pending action requiring confirmation."""
+        import uuid, database
+        action_id = str(uuid.uuid4())
+        target = {"sheet_name": sheet_name, "id_column": row_identifier_column, "id_value": row_identifier_value}
+        proposed = {"update_column": column_to_update, "new_value": new_value}
+        database.create_pending_action(action_id, "update_cell", target, proposed, ttl_minutes=5)
+        return f"CONFIRMATION REQUIRED: Staged update action (action_id: {action_id}). Call POST /actions/{action_id}/confirm to execute."
 
     def delete_row(self, sheet_name: str, row_identifier_column: str, row_identifier_value: Any) -> str:
-        """Deletes an entire row from a specified sheet based on a unique identifier in a given column."""
-        try:
-            worksheet = self.spreadsheet.worksheet(sheet_name)
-            headers = worksheet.row_values(1)
-            id_col_index = headers.index(row_identifier_column) + 1
-            cell = worksheet.find(str(row_identifier_value), in_column=id_col_index)
-            worksheet.delete_rows(cell.row)
-            st.cache_data.clear()
-            return f"✅ Success: Deleted row where '{row_identifier_column}' was '{row_identifier_value}'."
-        except Exception as e: return f"❌ Error deleting row: {e}. The specified identifier might not be found."
+        """Stages a row deletion as a pending action requiring confirmation."""
+        import uuid, database
+        action_id = str(uuid.uuid4())
+        target = {"sheet_name": sheet_name, "id_column": row_identifier_column, "id_value": row_identifier_value}
+        proposed = {"action": "delete"}
+        database.create_pending_action(action_id, "delete_row", target, proposed, ttl_minutes=5)
+        return f"CONFIRMATION REQUIRED: Staged delete action (action_id: {action_id}). Call POST /actions/{action_id}/confirm to execute."
 
     def analyze_data_quality(self, sheet_name: str) -> str:
         """Performs a comprehensive data quality analysis on a specified worksheet."""
