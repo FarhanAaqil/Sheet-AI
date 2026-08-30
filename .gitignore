@@ -60,3 +60,10 @@ Thumbs.db
 # ── OS ───────────────────────────────────────────────────────────────────────
 desktop.ini
 ehthumbs.db
+
+# ── Specification & Planning Docs ────────────────────────────────────────────
+01-PRD.md
+02-ARCHITECTURE.md
+03-IMPLEMENTATION-PLAN.md
+04-EVAL-TESTING-SPEC.md
+implementation_plan.md
