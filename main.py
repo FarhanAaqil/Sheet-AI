@@ -70,10 +70,14 @@ _agent: Optional[SheetSenseAgent] = None
 async def startup_event():
     global _agent
     logger.info("Initializing SQLite database tables …")
-    init_db()
-    logger.info("Initializing SheetSense AI Agent …")
-    _agent = SheetSenseAgent()
-    logger.info("Agent ready.")
+    database.init_db()
+    if _agent is None:
+        try:
+            logger.info("Initializing SheetSense AI Agent …")
+            _agent = SheetSenseAgent()
+            logger.info("Agent ready.")
+        except Exception as e:
+            logger.warning(f"Agent startup deferred or mocked: {e}")
 
 def get_agent() -> SheetSenseAgent:
     if _agent is None:
