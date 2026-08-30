@@ -7,6 +7,8 @@
 # =============================================================================
 
 import os
+import re
+import uuid
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -15,6 +17,8 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
+
+import database
 
 # --- LangGraph / LangChain Core (LangChain >=1.0 dropped AgentExecutor) ---
 from langgraph.prebuilt import create_react_agent
@@ -56,6 +60,8 @@ class SheetTools:
     def __init__(self, spreadsheet: gspread.Spreadsheet):
         self.spreadsheet = spreadsheet
         self._cache: Dict[str, pd.DataFrame] = {}
+        self.active_session_id: Optional[str] = None
+        self.last_pending_action: Optional[Dict[str, Any]] = None
         self._load_all_sheets()
 
     # ---- Internal helpers ------------------------------------------------
@@ -146,25 +152,48 @@ class SheetTools:
           - 'id_value': value to match in that column
           - 'update_column': column whose value you want to change
           - 'new_value': the new value to write
-        Updates a single cell in the live Google Sheet.
+        SAFETY NOTICE: This tool DOES NOT execute directly. It creates a pending action
+        that must be explicitly confirmed via POST /actions/{action_id}/confirm.
         Example input: {"sheet_name": "Employees", "id_column": "EmployeeID", "id_value": "E042",
                         "update_column": "Salary", "new_value": 75000}
         """
         try:
-            params = json.loads(input_str)
-            ws = self.spreadsheet.worksheet(params["sheet_name"])
-            headers = ws.row_values(1)
-            id_col_idx = headers.index(params["id_column"]) + 1
-            upd_col_idx = headers.index(params["update_column"]) + 1
-            cell = ws.find(str(params["id_value"]), in_column=id_col_idx)
-            ws.update_cell(cell.row, upd_col_idx, params["new_value"])
-            self._refresh_sheet(params["sheet_name"])
+            params = json.loads(input_str) if isinstance(input_str, str) else input_str
+            sheet_name = params["sheet_name"]
+            id_column = params["id_column"]
+            id_value = params["id_value"]
+            update_column = params["update_column"]
+            new_value = params["new_value"]
+
+            action_id = str(uuid.uuid4())
+            target = {
+                "sheet_name": sheet_name,
+                "id_column": id_column,
+                "id_value": id_value,
+            }
+            proposed_change = {
+                "update_column": update_column,
+                "new_value": new_value,
+            }
+
+            pending_action = database.create_pending_action(
+                action_id=action_id,
+                tool_name="update_cell",
+                target=target,
+                proposed_change=proposed_change,
+                session_id=self.active_session_id,
+                ttl_minutes=5,
+            )
+            self.last_pending_action = pending_action
+
             return (
-                f"✅ Updated '{params['update_column']}' to '{params['new_value']}' "
-                f"for {params['id_column']} = '{params['id_value']}'."
+                f"⚠️ CONFIRMATION REQUIRED: A pending update action has been staged with action_id: '{action_id}'. "
+                f"Target: {sheet_name} where {id_column}='{id_value}'. Proposed: set '{update_column}' to '{new_value}'. "
+                f"This change has NOT been executed yet and will expire in 5 minutes. "
+                f"Call POST /actions/{action_id}/confirm to proceed."
             )
         except Exception as e:
-            return f"❌ Update failed: {e}"
+            return f"❌ Failed to stage update action: {e}"
 
     def delete_row(self, input_str: str) -> str:
         """
@@ -173,23 +202,42 @@ class SheetTools:
           - 'sheet_name': worksheet name
           - 'id_column': column name used to locate the row
           - 'id_value': value to match for deletion
-        Permanently deletes the matching row from the live Google Sheet.
+        SAFETY NOTICE: This tool DOES NOT execute directly. It creates a pending action
+        that must be explicitly confirmed via POST /actions/{action_id}/confirm.
         Example input: {"sheet_name": "Orders", "id_column": "OrderID", "id_value": "ORD-991"}
         """
         try:
-            params = json.loads(input_str)
-            ws = self.spreadsheet.worksheet(params["sheet_name"])
-            headers = ws.row_values(1)
-            id_col_idx = headers.index(params["id_column"]) + 1
-            cell = ws.find(str(params["id_value"]), in_column=id_col_idx)
-            ws.delete_rows(cell.row)
-            self._refresh_sheet(params["sheet_name"])
+            params = json.loads(input_str) if isinstance(input_str, str) else input_str
+            sheet_name = params["sheet_name"]
+            id_column = params["id_column"]
+            id_value = params["id_value"]
+
+            action_id = str(uuid.uuid4())
+            target = {
+                "sheet_name": sheet_name,
+                "id_column": id_column,
+                "id_value": id_value,
+            }
+            proposed_change = {"action": "delete"}
+
+            pending_action = database.create_pending_action(
+                action_id=action_id,
+                tool_name="delete_row",
+                target=target,
+                proposed_change=proposed_change,
+                session_id=self.active_session_id,
+                ttl_minutes=5,
+            )
+            self.last_pending_action = pending_action
+
             return (
-                f"✅ Deleted row where {params['id_column']} = '{params['id_value']}' "
-                f"from '{params['sheet_name']}'."
+                f"⚠️ CONFIRMATION REQUIRED: A pending delete action has been staged with action_id: '{action_id}'. "
+                f"Target: {sheet_name} where {id_column}='{id_value}'. "
+                f"This deletion has NOT been executed yet and will expire in 5 minutes. "
+                f"Call POST /actions/{action_id}/confirm to proceed."
             )
         except Exception as e:
-            return f"❌ Delete failed: {e}"
+            return f"❌ Failed to stage delete action: {e}"
 
     def summarize_sheet(self, input_str: str) -> str:
         """
@@ -392,6 +440,10 @@ class SheetSenseAgent:
         if sheet_name:
             query = f"[Active sheet hint: '{sheet_name}'] {user_message}"
 
+        # Bind session ID and reset last pending action
+        self.sheet_tools.active_session_id = session_id
+        self.sheet_tools.last_pending_action = None
+
         # Build message list: history + new human turn
         history = self._get_history(session_id)
         messages = history + [HumanMessage(content=query)]
@@ -417,11 +469,15 @@ class SheetSenseAgent:
             # Persist turn to session memory
             self._save_turn(session_id, user_message, answer)
 
-            return {
+            output = {
                 "answer": answer,
                 "tools_used": tools_used,
                 "intermediate_steps": intermediate,
             }
+            if self.sheet_tools.last_pending_action is not None:
+                output["pending_action"] = self.sheet_tools.last_pending_action
+
+            return output
         except Exception as e:
             logger.error(f"Agent execution error: {e}", exc_info=True)
             return {

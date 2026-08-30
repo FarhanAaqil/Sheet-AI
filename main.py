@@ -101,6 +101,7 @@ class ChatResponse(BaseModel):
     session_id: Optional[str]
     tool_calls_made: list[str] = []
     raw_steps: Optional[list[Dict[str, Any]]] = None
+    pending_action: Optional[Dict[str, Any]] = None
 
 class HealthResponse(BaseModel):
     status: str
@@ -155,6 +156,7 @@ def chat(
             session_id=request.session_id,
             tool_calls_made=result.get("tools_used", []),
             raw_steps=result.get("intermediate_steps"),
+            pending_action=result.get("pending_action"),
         )
     except Exception as e:
         logger.error(f"Agent error: {e}", exc_info=True)
