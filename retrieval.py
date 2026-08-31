@@ -149,11 +149,12 @@ COMMON_COLUMN_DESCRIPTIONS = {
     "product": "Name or title of the purchased item or product.",
     "category": "Classification grouping for products or items.",
     "quantity": "Number of product units ordered.",
-    "unit_price": "Base price per individual item before quantity multiplication.",
-    "price": "Total line-item price (quantity multiplied by unit price).",
+    "unit_price": "Base price, unit cost, or unit rate per individual item unit before applying quantity.",
+    "price": "Total gross line-item price or total sales amount (calculated as quantity multiplied by unit price).",
     "status": "Order fulfillment or lifecycle status (completed, shipped, pending, cancelled).",
     "order_date": "Timestamp or calendar date when the transaction occurred.",
 }
+
 
 
 class SchemaIndex:
@@ -208,10 +209,11 @@ class SchemaIndex:
                     or f"Column '{col_str}' in sheet '{sheet_name}' with data type {dtype_str}."
                 )
 
-                # Format searchable text string
+                # Format searchable text string with both raw and space-separated column names
+                col_normalized = col_str.replace("_", " ")
                 samples_str = ", ".join(str(s) for s in sample_vals)
                 searchable_text = (
-                    f"Sheet: {sheet_name} | Column: {col_str} | Type: {dtype_str} | "
+                    f"Sheet: {sheet_name} | Column: {col_str} {col_normalized} | Type: {dtype_str} | "
                     f"Samples: [{samples_str}] | Description: {desc}"
                 )
 
@@ -240,3 +242,117 @@ class SchemaIndex:
 
     def __len__(self) -> int:
         return len(self.entries)
+
+
+# ---------------------------------------------------------------------------
+# RAG-Fusion Retriever (Architecture §5, PRD FR-6)
+# ---------------------------------------------------------------------------
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+
+
+class RAGFusionRetriever:
+    """
+    RAG-Fusion Retriever over spreadsheet schema metadata.
+    1. Generates 3 query reformulations (MultiQueryReformulator).
+    2. Scores column metadata using TF-IDF cosine similarity for each query variant.
+    3. Merges ranked candidate lists using Reciprocal Rank Fusion (RRF, k=60).
+    4. Returns top-ranked candidate columns with sample values and semantic descriptions.
+    """
+
+    def __init__(
+        self,
+        schema_index: SchemaIndex,
+        reformulator: Optional[MultiQueryReformulator] = None,
+        k: int = 60,
+    ):
+        self.schema_index = schema_index
+        self.reformulator = reformulator or MultiQueryReformulator()
+        self.k = k
+        self.vectorizer: Optional[TfidfVectorizer] = None
+        self.tfidf_matrix = None
+        self._fit_index()
+
+    def _fit_index(self):
+        """Fit TF-IDF vectorizer over all indexed column searchable_text representations."""
+        entries = self.schema_index.get_entries()
+        if not entries:
+            self.vectorizer = None
+            self.tfidf_matrix = None
+            return
+
+        corpus = [e.searchable_text for e in entries]
+        self.vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
+        self.tfidf_matrix = self.vectorizer.fit_transform(corpus)
+        logger.info(f"RAGFusionRetriever fitted TF-IDF matrix over {len(entries)} column entries.")
+
+    def rebuild(self):
+        """Re-fit index after schema updates."""
+        self._fit_index()
+
+    def retrieve_top_k(self, query: str, top_k: int = 4) -> List[Dict[str, Any]]:
+        """
+        Execute RAG-Fusion retrieval:
+        1. Generate 3 query variants.
+        2. Score each against corpus using TF-IDF cosine similarity.
+        3. Fuse rankings via RRF: score(d) = sum(1 / (k + rank_i(d))).
+        4. Return top_k fused candidate columns.
+        """
+        entries = self.schema_index.get_entries()
+        if not entries or self.vectorizer is None or self.tfidf_matrix is None:
+            return []
+
+        # 1. Multi-query generation
+        variants = self.reformulator.reformulate(query)
+
+        # 2. Score and rank per variant
+        rrf_scores: Dict[int, float] = {idx: 0.0 for idx in range(len(entries))}
+
+        for variant in variants:
+            if not variant.strip():
+                continue
+            try:
+                q_vec = self.vectorizer.transform([variant])
+                sims = cosine_similarity(q_vec, self.tfidf_matrix).flatten()
+
+                # Rank indices by descending similarity
+                ranked_indices = np.argsort(-sims)
+                for rank, idx in enumerate(ranked_indices):
+                    # Reciprocal Rank Fusion: 1 / (k + rank)
+                    rrf_scores[idx] += 1.0 / (self.k + rank)
+            except Exception as e:
+                logger.warning(f"Error computing similarity for variant '{variant}': {e}")
+
+        # 3. Sort by cumulative RRF score
+        sorted_indices = sorted(rrf_scores.keys(), key=lambda i: rrf_scores[i], reverse=True)
+        top_indices = sorted_indices[:top_k]
+
+        results = []
+        for idx in top_indices:
+            entry = entries[idx]
+            item = entry.to_dict()
+            item["rrf_score"] = round(rrf_scores[idx], 5)
+            results.append(item)
+
+        return results
+
+
+def format_retrieval_context(candidates: List[Dict[str, Any]]) -> str:
+    """Format top retrieved schema candidates into a concise prompt hint block."""
+    if not candidates:
+        return ""
+
+    lines = [
+        "[Retrieved Schema Context (RAG-Fusion)]:",
+        "The following columns and sheets appear most relevant to your query:",
+    ]
+    for c in candidates:
+        samples_str = ", ".join(str(s) for s in c.get("sample_values", [])[:4])
+        lines.append(
+            f"- Sheet '{c['sheet_name']}' -> Column '{c['column_name']}' ({c['dtype']}): "
+            f"{c['description']} (Sample values: [{samples_str}])"
+        )
+    lines.append("Use these hints as helpful context to select the right sheets and columns.")
+    return "\n".join(lines)
+

@@ -21,6 +21,12 @@ from dotenv import load_dotenv
 
 import database
 from session_store import SessionStore, get_session_store
+from retrieval import (
+    SchemaIndex,
+    MultiQueryReformulator,
+    RAGFusionRetriever,
+    format_retrieval_context,
+)
 
 # --- LangGraph / LangChain Core (LangChain >=1.0 dropped AgentExecutor) ---
 from langgraph.prebuilt import create_react_agent
@@ -470,6 +476,22 @@ class SheetSenseAgent:
         # --- Multi-turn session memory store (Redis with 24h TTL or configured backend) ---
         self.session_store: SessionStore = session_store or get_session_store()
 
+        # --- Retrieval layer (RAG-Fusion over schema metadata) ---
+        self.schema_index = SchemaIndex()
+        self.reformulator = MultiQueryReformulator(llm=self.llm)
+        self.retriever = RAGFusionRetriever(
+            schema_index=self.schema_index,
+            reformulator=self.reformulator,
+            k=60,
+        )
+        self._sync_schema_index()
+
+    def _sync_schema_index(self):
+        """Populate SchemaIndex from cached sheet DataFrames and re-fit retriever."""
+        if hasattr(self, "sheet_tools") and self.sheet_tools._cache:
+            self.schema_index.build_from_dataframes(self.sheet_tools._cache)
+            self.retriever.rebuild()
+
     def _build_tools(self):
         """Wrap SheetTools methods as LangChain-compatible tool callables with Pydantic schemas."""
         st = self.sheet_tools
@@ -562,10 +584,21 @@ class SheetSenseAgent:
                 "intermediate_steps": [...],
             }
         """
-        # Prepend a sheet hint if provided
-        query = user_message
+        # Sync schema index with any newly loaded DataFrames in sheet_tools cache
+        self._sync_schema_index()
+
+        # Retrieve top schema candidates via RAG-Fusion
+        retrieved_candidates = self.retriever.retrieve_top_k(user_message, top_k=4)
+        retrieval_context = format_retrieval_context(retrieved_candidates)
+
+        # Assemble prompt query with optional sheet hint and RAG-Fusion schema context
+        query_parts = []
         if sheet_name:
-            query = f"[Active sheet hint: '{sheet_name}'] {user_message}"
+            query_parts.append(f"[Active sheet hint: '{sheet_name}']")
+        if retrieval_context:
+            query_parts.append(retrieval_context)
+        query_parts.append(user_message)
+        query = "\n\n".join(query_parts)
 
         # Bind session ID and reset last pending action
         self.sheet_tools.active_session_id = session_id
@@ -600,6 +633,7 @@ class SheetSenseAgent:
                 "answer": answer,
                 "tools_used": tools_used,
                 "intermediate_steps": intermediate,
+                "retrieved_schema": retrieved_candidates,
             }
             if self.sheet_tools.last_pending_action is not None:
                 output["pending_action"] = self.sheet_tools.last_pending_action
