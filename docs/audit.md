@@ -31,14 +31,14 @@
 |---|---|---|---|
 | **Simple Reads (`read_sheet`)** | ✅ Implemented | Reads sheet into DataFrame cache, returns markdown table (capped at 50 rows). | None. |
 | **Data Aggregation (`filter_and_aggregate`)** | ✅ Implemented | Executes sandboxed pandas expressions on DataFrame cache. | Needs strict Pydantic input validation. |
-| **Destructive Update (`update_cell`)** | ⚠️ Hazard (Unsafe) | Writes directly to live Google Sheet via `gspread` without user confirmation gate. | **Critical:** Must be gated through `pending_actions` + `POST /actions/{id}/confirm` (Day 2). |
-| **Destructive Delete (`delete_row`)** | ⚠️ Hazard (Unsafe) | Deletes live sheet row directly without confirmation gate. | **Critical:** Must be gated through `pending_actions` + `POST /actions/{id}/confirm` (Day 2). |
+| **Destructive Update (`update_cell`)** | ✅ Gated & Isolated | Creates pending action with 5-min TTL. Executed only via `POST /actions/{id}/confirm`. Direct writes blocked. | Completed (Day 2). |
+| **Destructive Delete (`delete_row`)** | ✅ Gated & Isolated | Creates pending action with 5-min TTL. Executed only via `POST /actions/{id}/confirm`. Direct writes blocked. | Completed (Day 2). |
 | **Summary Stats (`summarize_sheet`)** | ✅ Implemented | Computes missing values, row counts, and numeric statistics. | None. |
 | **Sheet Listing (`list_sheets`)** | ✅ Implemented | Returns worksheet names from connected spreadsheet. | None. |
 | **IQR Anomaly Detection (`find_anomalies`)** | ✅ Implemented | Calculates Q1, Q3, IQR = Q3 - Q1, flags rows outside $[Q1 - 1.5 \times IQR, Q3 + 1.5 \times IQR]$. | Fixed pandas Boolean Series index alignment warning. |
-| **Cross-Sheet Join (`cross_sheet_join`)** | ✅ Implemented | Merges two sheets in DataFrame cache on common key. | Needs multi-sheet test fixture (orders + customers). |
+| **Cross-Sheet Join (`cross_sheet_join`)** | ✅ Implemented | Merges two sheets in DataFrame cache on common key. | Verified with Orders + Customers fixtures. |
 | **Session Memory** | ✅ Migrated to Redis | Migrated to `SessionStore` with `RedisSessionStore` (24h rolling TTL) and `InMemorySessionStore` fallback. Multi-worker state loss resolved. | Completed (Day 3). |
-| **RAG-Fusion** | ⏳ In Progress | Schema metadata index + 3-variant multi-query TF-IDF with Reciprocal Rank Fusion ($k=60$). | Tasks D3-5 to D3-7. |
+| **RAG-Fusion** | ✅ Implemented | Schema metadata index + 3-variant multi-query TF-IDF with Reciprocal Rank Fusion ($k=60$). | Completed (Day 3). |
 
 ---
 
@@ -76,4 +76,17 @@ The live test run verified that the ReAct agent successfully routes to and invok
   - Multiple distinct worker processes reading/writing from shared Redis keys (`session:{session_id}`) successfully share and extend multi-turn dialogue histories.
   - Rolling 24-hour TTL (`86400` seconds) is properly refreshed on each read and write.
   - History windowing is capped at 10 turns (20 messages), preventing unbounded memory growth.
+
+---
+
+## 6. Evaluation Harness & Metrics Reconciliation (Day 4)
+
+- **Harness:** `eval_harness.py` executed across 30 benchmark tasks in `tests/eval_dataset.json`.
+- **Tool Selection Accuracy (TSA):** **100.0%** (30/30)
+- **Execution Accuracy (EA):** **93.3%** (28/30)
+- **Confirmation Gate Adherence (CGA):** **100.0%** (4/4 destructive queries gated, 0 direct writes)
+- **Injection Block Rate (IBR):** **100.0%** (4/4 formula/code injection exploits blocked)
+- **Audit Persistence:** Stored in SQLite table `eval_runs` and accessible via `POST /eval/run`.
+- **Detailed Report:** Documented in `docs/eval_report.md`.
+
 

@@ -339,3 +339,23 @@ def metrics(_key: str = Depends(get_api_key)):
     """Returns tool usage counts, error rates, average latency, and action counts."""
     return database.get_metrics_summary()
 
+
+# ---------------------------------------------------------------------------
+# Evaluation Endpoints (Architecture §6, PRD FR-8)
+# ---------------------------------------------------------------------------
+import eval_harness
+
+
+@app.post("/eval/run", tags=["Evaluation"])
+def trigger_eval_run(_key: str = Depends(get_api_key)):
+    """
+    Triggers the benchmark evaluation harness across 30 test cases,
+    computes TSA, EA, CGA, IBR, and latency percentiles, and logs the run to SQLite.
+    """
+    try:
+        summary = eval_harness.run_evaluation()
+        return summary
+    except Exception as e:
+        logger.error(f"Evaluation run failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Eval run failed: {e}")
+

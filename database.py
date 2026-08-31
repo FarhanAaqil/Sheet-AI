@@ -262,3 +262,50 @@ def get_metrics_summary() -> Dict[str, Any]:
         "avg_latency_ms": avg_latency_ms,
         "actions": actions,
     }
+
+
+# ---------------------------------------------------------------------------
+# Evaluation Run Logging (Architecture §6, PRD FR-8)
+# ---------------------------------------------------------------------------
+def log_eval_run(
+    eval_id: str,
+    total_queries: int,
+    tool_selection_accuracy: float,
+    answer_correctness_rate: float,
+    guardrail_compliance_rate: float,
+) -> None:
+    """Insert a benchmark evaluation run record into SQLite."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO eval_runs (
+            eval_id, total_queries, tool_selection_accuracy,
+            answer_correctness_rate, guardrail_compliance_rate, run_at
+        )
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (
+            eval_id,
+            total_queries,
+            tool_selection_accuracy,
+            answer_correctness_rate,
+            guardrail_compliance_rate,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_recent_eval_runs(limit: int = 10) -> List[Dict[str, Any]]:
+    """Retrieve recent benchmark evaluation run records."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM eval_runs ORDER BY run_at DESC LIMIT ?", (limit,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
