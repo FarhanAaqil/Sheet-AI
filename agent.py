@@ -20,6 +20,7 @@ from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 
 import database
+from session_store import SessionStore, get_session_store
 
 # --- LangGraph / LangChain Core (LangChain >=1.0 dropped AgentExecutor) ---
 from langgraph.prebuilt import create_react_agent
@@ -440,7 +441,7 @@ class SheetSenseAgent:
       - Executor: LangGraph create_react_agent (max_iterations=5 via recursion_limit)
     """
 
-    def __init__(self):
+    def __init__(self, session_store: Optional[SessionStore] = None):
         # --- Google Sheets connection ---
         gc = _build_gspread_client()
         sheet_url = os.getenv("GOOGLE_SHEET_URL")
@@ -466,9 +467,8 @@ class SheetSenseAgent:
             prompt=SYSTEM_PROMPT,
         )
 
-        # --- Per-session message history (in-process; replaced with Redis in Day 3) ---
-        # Key: session_id -> list of last ≤10 {role, content} dicts
-        self._sessions: Dict[str, List[Dict[str, str]]] = {}
+        # --- Multi-turn session memory store (Redis with 24h TTL or configured backend) ---
+        self.session_store: SessionStore = session_store or get_session_store()
 
     def _build_tools(self):
         """Wrap SheetTools methods as LangChain-compatible tool callables with Pydantic schemas."""
@@ -527,26 +527,19 @@ class SheetSenseAgent:
         ]
 
     def _get_history(self, session_id: Optional[str]) -> List:
-        """Return the stored message history for a session as LangChain message objects."""
-        key = session_id or "__default__"
-        history = self._sessions.get(key, [])
+        """Return the stored message history for a session from SessionStore as LangChain messages."""
+        history = self.session_store.get_history(session_id)
         messages = []
-        for turn in history[-10:]:  # last 10 turns
-            if turn["role"] == "human":
+        for turn in history:
+            if turn.get("role") == "human":
                 messages.append(HumanMessage(content=turn["content"]))
             else:
                 messages.append(AIMessage(content=turn["content"]))
         return messages
 
     def _save_turn(self, session_id: Optional[str], human: str, ai: str):
-        """Append a completed turn to session history (capped at 10 turns)."""
-        key = session_id or "__default__"
-        if key not in self._sessions:
-            self._sessions[key] = []
-        self._sessions[key].append({"role": "human", "content": human})
-        self._sessions[key].append({"role": "ai", "content": ai})
-        # Keep only last 20 messages (= 10 turns)
-        self._sessions[key] = self._sessions[key][-20:]
+        """Append a completed turn to SessionStore (24h rolling TTL)."""
+        self.session_store.save_turn(session_id, human, ai)
 
     def run(
         self,
