@@ -19,9 +19,11 @@ WORKDIR /app
 COPY --from=builder /install /usr/local
 
 # Copy application source
-COPY agent.py main.py app.py ./
+COPY *.py ./
+COPY credentials.json* ./
 
-RUN mkdir -p /app/cache
+RUN mkdir -p /app/cache /app/data
+
 
 # Expose both FastAPI and Streamlit ports
 EXPOSE 8000 8501

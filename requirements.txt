@@ -26,3 +26,4 @@ plotly>=5.15.0
 python-dotenv>=1.0.0
 pydantic>=2.0.0
 tabulate>=0.9.0          # for DataFrame.to_markdown()
+redis>=5.0.0

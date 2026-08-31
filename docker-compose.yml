@@ -1,14 +1,37 @@
-version: "3.9"
-
 services:
-  sheets-ai-agent:
+  sheetsense-api:
     build: .
-    image: chatbot-sheet:latest
-    container_name: chatbot-sheet-container
+    image: sheetsense-ai:latest
+    container_name: sheetsense-api-container
     ports:
-      - "8501:8501"
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - SQLITE_DB_PATH=/app/data/sheetsense.db
     env_file:
       - .env
     volumes:
       - ./cache:/app/cache
+      - sqlite_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: sheetsense-redis-container
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  sqlite_data:
