@@ -37,8 +37,8 @@
 | **Sheet Listing (`list_sheets`)** | ✅ Implemented | Returns worksheet names from connected spreadsheet. | None. |
 | **IQR Anomaly Detection (`find_anomalies`)** | ✅ Implemented | Calculates Q1, Q3, IQR = Q3 - Q1, flags rows outside $[Q1 - 1.5 \times IQR, Q3 + 1.5 \times IQR]$. | Fixed pandas Boolean Series index alignment warning. |
 | **Cross-Sheet Join (`cross_sheet_join`)** | ✅ Implemented | Merges two sheets in DataFrame cache on common key. | Needs multi-sheet test fixture (orders + customers). |
-| **Session Memory** | ⚠️ In-Memory Only | Uses in-process dictionary (`_sessions`). Breaks across multi-worker deployments. | **Must migrate to Redis** with rolling TTL (Day 3). |
-| **RAG-Fusion** | ❌ Not Implemented | Claimed in README, but no vector store or reciprocal rank fusion code exists. | **Must implement schema metadata RRF** (Day 3). |
+| **Session Memory** | ✅ Migrated to Redis | Migrated to `SessionStore` with `RedisSessionStore` (24h rolling TTL) and `InMemorySessionStore` fallback. Multi-worker state loss resolved. | Completed (Day 3). |
+| **RAG-Fusion** | ⏳ In Progress | Schema metadata index + 3-variant multi-query TF-IDF with Reciprocal Rank Fusion ($k=60$). | Tasks D3-5 to D3-7. |
 
 ---
 
@@ -65,3 +65,15 @@ The live test run verified that the ReAct agent successfully routes to and invok
 ### Observations & Mitigations for Subsequent Days:
 1. **Free Tier Rate Limit (5 RPM):** Fast consecutive requests trigger Gemini 429 quota exhaustion. The client retry backoff in Day 5 will ensure requests buffer cleanly.
 2. **ReAct Step Recursion:** Multi-tool chaining requires prompt refinement so the agent emits final answers concisely without exhausting iteration limits.
+
+---
+
+## 5. Multi-Worker Session Synchronization Verification (Task D3-4)
+
+- **Test Suite:** `tests/test_multi_worker_session.py`
+- **Result:** **PASSED**
+- **Findings:**
+  - Multiple distinct worker processes reading/writing from shared Redis keys (`session:{session_id}`) successfully share and extend multi-turn dialogue histories.
+  - Rolling 24-hour TTL (`86400` seconds) is properly refreshed on each read and write.
+  - History windowing is capped at 10 turns (20 messages), preventing unbounded memory growth.
+
