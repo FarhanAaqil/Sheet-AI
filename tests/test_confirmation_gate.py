@@ -241,3 +241,72 @@ def test_reject_endpoint_cancels_pending_action(client):
     resp_confirm = client.post(f"/actions/{action_id}/confirm")
     assert resp_confirm.status_code == 410
     assert "rejected" in resp_confirm.json()["detail"]
+
+
+def test_operation_matrix_write_isolation_and_confirmation_gates(mock_spreadsheet):
+    """
+    Verify complete safety matrix:
+    - read -> allowed, 0 writes
+    - analysis -> allowed, 0 writes
+    - write -> confirmation required where appropriate, 0 writes before confirmation
+    - destructive write -> confirmation required, 0 writes before confirmation
+    - rejected/unsafe operation -> no write occurs, no pending action staged
+    """
+    from pydantic import ValidationError
+    from agent import UpdateCellInput
+
+    tools = SheetTools(mock_spreadsheet)
+    ws = mock_spreadsheet.worksheet("Orders")
+
+    # 1. Read -> allowed, 0 writes, 0 pending action
+    read_res = tools.read_sheet(json.dumps({"sheet_name": "Orders"}))
+    assert "Orders" in read_res
+    assert ws.update_cell.call_count == 0
+    assert ws.delete_rows.call_count == 0
+    assert tools.last_pending_action is None
+
+    # 2. Analysis -> allowed, 0 writes, 0 pending action
+    analysis_res = tools.summarize_sheet(json.dumps({"sheet_name": "Orders"}))
+    assert "rows" in analysis_res
+    assert ws.update_cell.call_count == 0
+    assert ws.delete_rows.call_count == 0
+    assert tools.last_pending_action is None
+
+    # 3. Write -> confirmation required, 0 direct writes before confirmation
+    upd_res = tools.update_cell(json.dumps({
+        "sheet_name": "Orders",
+        "id_column": "OrderID",
+        "id_value": "ORD-1001",
+        "update_column": "Price",
+        "new_value": 299.99,
+    }))
+    assert "CONFIRMATION REQUIRED" in upd_res
+    assert tools.last_pending_action is not None
+    assert tools.last_pending_action["tool_name"] == "update_cell"
+    assert ws.update_cell.call_count == 0
+
+    # 4. Destructive write -> confirmation required, 0 direct writes before confirmation
+    del_res = tools.delete_row(json.dumps({
+        "sheet_name": "Orders",
+        "id_column": "OrderID",
+        "id_value": "ORD-1001",
+    }))
+    assert "CONFIRMATION REQUIRED" in del_res
+    assert tools.last_pending_action is not None
+    assert tools.last_pending_action["tool_name"] == "delete_row"
+    assert ws.delete_rows.call_count == 0
+
+    # 5. Rejected/unsafe operation -> no write occurs, validation fails before reaching writer
+    tools.last_pending_action = None
+    with pytest.raises(ValidationError):
+        UpdateCellInput(
+            sheet_name="Orders",
+            id_column="OrderID",
+            id_value="ORD-1001",
+            update_column="Price",
+            new_value="=SUM(A1:A10)",
+        )
+    # Ensure writer was never reached
+    assert ws.update_cell.call_count == 0
+    assert ws.delete_rows.call_count == 0
+    assert tools.last_pending_action is None

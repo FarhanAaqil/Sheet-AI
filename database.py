@@ -20,7 +20,7 @@ DB_PATH = os.getenv("SQLITE_DB_PATH", os.path.join(os.path.dirname(__file__), "s
 
 def get_db_connection() -> sqlite3.Connection:
     """Return a connection to the SQLite database with Row factory."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -28,8 +28,9 @@ def get_db_connection() -> sqlite3.Connection:
 def init_db(db_path: Optional[str] = None):
     """Create all required tables if they do not exist."""
     path = db_path or DB_PATH
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=20.0)
     cursor = conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
 
     cursor.executescript("""
     CREATE TABLE IF NOT EXISTS tool_calls (

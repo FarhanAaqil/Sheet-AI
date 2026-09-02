@@ -297,6 +297,10 @@ def confirm_action(
             )
     except ValueError as e:
         logger.error(f"Error parsing expires_at timestamp '{expires_at_str}': {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid expiration timestamp on action '{action_id}'.",
+        )
 
     # Execute the write operation through sheets_writer
     start_time = time.time()

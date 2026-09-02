@@ -1,13 +1,13 @@
-# SheetSense AI — Enterprise Conversational Spreadsheet Agent
+# SheetSense AI — Production-Oriented Conversational Spreadsheet Agent
 
 [![CI Pipeline](https://github.com/FarhanAaqil/Sheet-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/FarhanAaqil/Sheet-AI/actions/workflows/ci.yml)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)
 ![LangChain](https://img.shields.io/badge/LangChain-ReAct-green.svg)
 ![Redis](https://img.shields.io/badge/Redis-7.0-red.svg)
-![Tests](https://img.shields.io/badge/tests-50%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-84%20passed-brightgreen.svg)
 
-> **Enterprise-grade conversational AI agent over live Google Sheets featuring schema RAG-Fusion, isolated write execution, human-in-the-loop confirmation gates, and multi-worker session memory.**
+> **Production-oriented conversational AI agent over live Google Sheets featuring schema RAG-Fusion, isolated write execution, human-in-the-loop confirmation gates, and multi-worker session memory.**
 
 ---
 
@@ -15,18 +15,18 @@
 
 SheetSense AI enables non-technical stakeholders to query, analyze, and mutate live Google Sheets data through plain-English dialogue without writing SQL or spreadsheet formulas. Unlike naive LLM wrappers, SheetSense AI enforces strict write isolation, 100% confirmation gating on destructive mutations, and comprehensive injection defense.
 
-All performance metrics below are empirically measured and verified via our automated evaluation harness ([eval_harness.py](file:///d:/EDU/Projects/sheet%20ai%20agent/eval_harness.py)) across 30 benchmark tasks ([tests/eval_dataset.json](file:///d:/EDU/Projects/sheet%20ai%20agent/tests/eval_dataset.json)):
+All performance metrics below are empirically measured and verified via our automated evaluation harness ([eval_harness.py](eval_harness.py)) across 30 benchmark tasks ([tests/eval_dataset.json](tests/eval_dataset.json)):
 
 | Evaluation Metric | Target Threshold | Verified Empirical Score | Verification Status |
 |---|---|---|---|
-| **Tool Selection Accuracy (TSA)** | $\ge 90.0\%$ | **100.0%** (30/30) | ✅ Exceeds Target |
+| **Benchmark Routing Accuracy (BRA)** | $\ge 90.0\%$ | **100.0%** (30/30) | ✅ Exceeds Target |
 | **Execution Accuracy (EA)** | $\ge 85.0\%$ | **93.3%** (28/30) | ✅ Exceeds Target |
 | **Confirmation Gate Adherence (CGA)** | **100.0%** | **100.0%** (4/4 gated) | ✅ **0 direct writes permitted** |
 | **Injection Block Rate (IBR)** | **100.0%** | **100.0%** (4/4 blocked) | ✅ **0 formula/code exploits** |
-| **Median Latency ($p_{50}$)** | $< 3.0\,\text{s}$ | **~0.2 ms** (cached) / **~1.4 s** (live LLM) | ✅ Optimal |
-| **95th Percentile Latency ($p_{95}$)** | $< 6.0\,\text{s}$ | **~1.2 ms** (cached) / **~3.2 s** (live LLM) | ✅ Optimal |
+| **Median Latency ($p_{50}$)** | $< 3.0\,\text{s}$ | **~2.2 ms** (offline benchmark) | ✅ Optimal |
+| **95th Percentile Latency ($p_{95}$)** | $< 6.0\,\text{s}$ | **~7.0 ms** (offline benchmark) | ✅ Optimal |
 
-*Full evaluation report, category breakdowns, and methodology are documented in [docs/eval_report.md](file:///d:/EDU/Projects/sheet%20ai%20agent/docs/eval_report.md) and [docs/audit.md](file:///d:/EDU/Projects/sheet%20ai%20agent/docs/audit.md).*
+*Full evaluation report, category breakdowns, and methodology are documented in [docs/eval_report.md](docs/eval_report.md) and [docs/audit.md](docs/audit.md).*
 
 ---
 
@@ -71,12 +71,12 @@ All performance metrics below are empirically measured and verified via our auto
 
 ### A. Isolated Write Gateway & Confirmation Gate
 - **Zero Direct Writes:** The LLM agent **never** possesses write access to Google Sheets. Calling `update_cell` or `delete_row` creates an unconfirmed record in SQLite `pending_actions` with a cryptographic UUID4 and a 5-minute time-to-live.
-- **Physical Isolation:** Destructive operations are strictly quarantined in [sheets_writer.py](file:///d:/EDU/Projects/sheet%20ai%20agent/sheets_writer.py). Statically enforced by [scripts/check_write_isolation.py](file:///d:/EDU/Projects/sheet%20ai%20agent/scripts/check_write_isolation.py) and blocked in CI if any mutating call appears outside this gateway.
+- **Physical Isolation:** Destructive operations are strictly quarantined in [sheets_writer.py](sheets_writer.py). Statically enforced by [scripts/check_write_isolation.py](scripts/check_write_isolation.py) and blocked in CI if any mutating call appears outside this gateway.
 - **Replay & Expiration Protection:** Confirming an expired action or re-executing an already confirmed action immediately returns HTTP `410 Gone`.
 
 ### B. Formula & Code Injection Guardrails
-- **Formula Injection Defense:** Reject all values prefixed with `=`, `+`, `-`, `@`, `\t`, `\r`, or `%0A` before execution.
-- **Code Execution Defense:** Arbitrary Python code in aggregation expressions (`__import__`, `eval`, `exec`, `open`, `os`, `sys`, `subprocess`) is rejected at schema validation time.
+- **Formula Injection Defense:** Reject spreadsheet formula injection prefixes (`=`, `+`, `-`, `@`, `\t`, `\r`, `%0A`) on text/formula values, while correctly distinguishing and accepting legitimate negative and positive numeric values (e.g. `-100`, `"-100"`, `-42.5`, `"-42.5"`).
+- **Zero-Eval AST Safe Execution:** Completely eliminated Python `eval()` and `exec()`. Aggregations execute either through native structured queries or via a strict AST evaluator that statically whitelists allowed node types, methods, and attributes, blocking all arbitrary code execution, imports, builtins, lambdas, and comprehensions.
 
 ### C. Credential Scrubbing & Audit Logging
 - **Regex Scrubbing:** Automatically scrubs Google API keys (`AIzaSy...`), OpenAI keys (`sk-...`), RSA private keys, and service account JSON keys from all SQLite `tool_calls` audit records.
@@ -90,7 +90,7 @@ All performance metrics below are empirically measured and verified via our auto
 
 ## 4. REST API Reference
 
-All requests require the `X-API-Key` header (default development key: `dev-key-123`).
+All requests require the `X-API-Key` header (example placeholder: `replace-with-a-random-secret`). Production deployments must use a strong, cryptographically generated secret stored securely in an environment variable or secrets manager.
 
 ### 1. `POST /chat`
 Execute a plain-English reasoning and data query turn.
@@ -188,10 +188,12 @@ Triggers the full benchmark evaluation harness across 30 test cases and outputs 
    GEMINI_API_KEY=your_gemini_api_key
    GOOGLE_SHEET_URL=https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit
    GCP_CREDENTIALS_JSON={"type": "service_account", ...}
-   SHEETSENSE_API_KEY=dev-key-123
+   SHEETSENSE_API_KEY=replace-with-a-random-secret
    REDIS_URL=redis://localhost:6379/0
    SQLITE_DB_PATH=sheetsense.db
    ```
+
+   > ⚠️ **Production Security Notice:** Never deploy with default or example secrets. Set `SHEETSENSE_API_KEY` to a cryptographically strong random secret (e.g. `openssl rand -hex 32`) stored securely in your environment or secrets manager.
 
 3. **Start FastAPI application:**
    ```bash
@@ -221,10 +223,10 @@ docker-compose up -d --build
 
 ## 6. Automated Testing & Verification
 
-Run the comprehensive test suite across all 50 unit, integration, and security tests:
+Run the comprehensive test suite across all 84 unit, integration, and security tests:
 
 ```bash
-# Run complete test suite (50 tests)
+# Run complete test suite (84 tests)
 pytest tests/ -v
 
 # Run static write-isolation guardrail scan

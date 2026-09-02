@@ -121,7 +121,7 @@ def rate_limit(max_requests: int, window_seconds: int = 60, endpoint_group: str 
         request: Request,
         api_key: Optional[str] = Security(api_key_header),
     ):
-        identifier = api_key or request.client.host if request.client else "anonymous"
+        identifier = api_key or (request.client.host if request.client else "anonymous")
         limiter = get_rate_limiter()
         allowed, retry_after = limiter.check_rate_limit(
             identifier=identifier,

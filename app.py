@@ -88,13 +88,12 @@ def clear_session_state():
     if 'active_tab' in st.session_state: st.session_state.active_tab = "🤖 AI Agent Chat"
 
 def execute_sandboxed_code(code: str, df: pd.DataFrame, is_plotly: bool = False) -> Any:
-    """Executes AI-generated code in a sandboxed environment."""
-    disallowed_keywords = ['import', 'os', 'sys', 'open', 'eval', 'exec', '__', 'lambda']
-    if any(keyword in code for keyword in disallowed_keywords):
-        raise PermissionError("Execution of potentially unsafe code was blocked.")
-    
-    allowed_globals = {"pd": pd, "px": px} if is_plotly else {"pd": pd}
-    return eval(code, allowed_globals, {"df": df})
+    """Executes code in a strictly AST-validated environment with zero Python eval()."""
+    import ast
+    from agent import validate_safe_pandas_ast, safe_eval_ast
+    validate_safe_pandas_ast(code)
+    tree = ast.parse(code, mode="eval")
+    return safe_eval_ast(tree, df)
 
 # --------------------------------------------------------------------------------------------------
 # --- 2. RAG-FUSION SYSTEM -------------------------------------------------------------------------

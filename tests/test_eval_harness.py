@@ -20,6 +20,7 @@ def test_eval_harness_execution():
     summary = run_evaluation()
 
     assert summary["total_cases"] == 30
+    assert summary["benchmark_routing_accuracy"] >= 90.0
     assert summary["tsa"] >= 90.0, f"TSA below threshold: {summary['tsa']}%"
     assert summary["ea"] >= 90.0, f"EA below threshold: {summary['ea']}%"
     assert summary["cga"] == 100.0, f"CGA must be 100%: {summary['cga']}%"
@@ -36,6 +37,7 @@ def test_eval_endpoint_and_sqlite_persistence(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["total_cases"] == 30
+    assert "benchmark_routing_accuracy" in data
     assert "tsa" in data
     assert "ea" in data
     assert "cga" in data

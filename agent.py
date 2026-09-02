@@ -8,6 +8,7 @@
 
 import os
 import re
+import ast
 import uuid
 import json
 import logging
@@ -40,21 +41,266 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Pydantic Tool Input Schemas & Injection Guardrails (Architecture §7)
 # ---------------------------------------------------------------------------
-FORBIDDEN_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "%")
+FORBIDDEN_FORMULA_PREFIXES = ("=", "@", "\t", "\r", "%")
 FORBIDDEN_IDENTIFIER_CHARS = (";", "--", "/*", "*/", "<script", "javascript:")
 
 
+def _is_numeric_literal(val: str) -> bool:
+    """Check if string is a pure numeric literal (e.g. -100, -42.5, +100)."""
+    try:
+        float(val)
+        return True
+    except ValueError:
+        return False
+
+
 def validate_no_formula_injection(value: Any, field_name: str) -> Any:
-    """Reject values starting with spreadsheet formula injection prefixes."""
+    """
+    Reject spreadsheet formula injection prefixes (=, @, \t, \r, %) and non-numeric
+    leading signs (+cmd, -malicious) while allowing legitimate numeric values (-100, +42.5).
+    """
     if isinstance(value, str):
         stripped = value.strip()
+        # Direct formula prefixes
         if any(stripped.startswith(prefix) for prefix in FORBIDDEN_FORMULA_PREFIXES):
             raise ValueError(
                 f"Formula injection rejected in field '{field_name}': cannot start with formula prefix '{stripped[0]}'."
             )
+        # Signs: allow negative/positive numbers like -100, -42.5, but block -cmd, +exec
+        if stripped.startswith(("+", "-")):
+            if not _is_numeric_literal(stripped):
+                raise ValueError(
+                    f"Formula injection rejected in field '{field_name}': cannot start with formula prefix '{stripped[0]}'."
+                )
         if any(char in value for char in FORBIDDEN_IDENTIFIER_CHARS):
             raise ValueError(f"Unsafe characters detected in field '{field_name}'.")
     return value
+
+
+# ---------------------------------------------------------------------------
+# Strict AST-Based Safe Evaluation & Execution Engine (Zero eval())
+# ---------------------------------------------------------------------------
+SAFE_PANDAS_METHODS = {
+    "sum", "mean", "median", "std", "var", "min", "max", "count",
+    "nunique", "value_counts", "describe", "head", "tail", "dropna",
+    "fillna", "isna", "notna", "round", "idxmax", "idxmin", "astype",
+    "contains", "lower", "upper", "strip",
+}
+
+SAFE_PANDAS_ATTRIBUTES = SAFE_PANDAS_METHODS | {
+    "loc", "iloc", "str", "shape", "columns", "dtypes", "index", "empty",
+}
+
+
+def validate_safe_pandas_ast(code: str) -> None:
+    """
+    Statically inspect an expression using AST. Rejects any operation outside
+    a strict safe pandas whitelist (e.g. __import__, eval, exec, open, lambdas,
+    comprehensions, arbitrary attributes, and non-whitelisted method calls).
+    """
+    if not code or not code.strip():
+        raise ValueError("Empty code expression.")
+
+    try:
+        tree = ast.parse(code, mode="eval")
+    except Exception as e:
+        raise ValueError(f"Unsafe code detected: invalid python syntax ({e}).")
+
+    for node in ast.walk(tree):
+        # Reject dangerous language constructs
+        if isinstance(
+            node,
+            (
+                ast.Import,
+                ast.ImportFrom,
+                ast.Lambda,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+                ast.Delete,
+                ast.Assign,
+                ast.AugAssign,
+                ast.While,
+                ast.For,
+                ast.AsyncFor,
+                ast.With,
+                ast.AsyncWith,
+                ast.Yield,
+                ast.YieldFrom,
+                ast.Await,
+            ),
+        ):
+            raise ValueError(f"Unsafe code detected: '{type(node).__name__}' construct is forbidden.")
+
+        # Reject unauthorized identifiers (only 'df' is permitted as variable name)
+        if isinstance(node, ast.Name):
+            if node.id != "df":
+                raise ValueError(f"Unsafe code detected: unauthorized identifier '{node.id}'.")
+
+        # Reject private/dunder attributes and non-whitelisted attribute access
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith("_") or node.attr not in SAFE_PANDAS_ATTRIBUTES:
+                raise ValueError(f"Unsafe code detected: unauthorized attribute '{node.attr}'.")
+
+        # Reject unauthorized function/method calls
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Attribute):
+                raise ValueError("Unsafe code detected: only whitelisted pandas methods are callable.")
+            if node.func.attr.startswith("_") or node.func.attr not in SAFE_PANDAS_METHODS:
+                raise ValueError(f"Unsafe code detected: unauthorized method call '{node.func.attr}'.")
+
+
+def safe_eval_ast(node: ast.AST, df: pd.DataFrame) -> Any:
+    """
+    Safely evaluate a strictly validated AST node against a pandas DataFrame.
+    NEVER uses Python eval() or exec().
+    """
+    if isinstance(node, ast.Expression):
+        return safe_eval_ast(node.body, df)
+
+    if isinstance(node, ast.Constant):
+        return node.value
+
+    if isinstance(node, ast.Name):
+        if node.id == "df":
+            return df
+        raise ValueError(f"Unsafe code detected: unauthorized identifier '{node.id}'.")
+
+    if isinstance(node, ast.Subscript):
+        val = safe_eval_ast(node.value, df)
+        slc = safe_eval_ast(node.slice, df)
+        if not isinstance(val, (pd.DataFrame, pd.Series)):
+            raise ValueError("Subscript indexing only allowed on DataFrame or Series.")
+        return val[slc]
+
+    if isinstance(node, ast.Attribute):
+        val = safe_eval_ast(node.value, df)
+        attr = node.attr
+        if attr.startswith("_") or attr not in SAFE_PANDAS_ATTRIBUTES:
+            raise ValueError(f"Unsafe attribute access detected: '{attr}' is not permitted.")
+        return getattr(val, attr)
+
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Attribute):
+            raise ValueError("Unsafe call detected: only whitelisted pandas methods are callable.")
+        method_name = node.func.attr
+        if method_name.startswith("_") or method_name not in SAFE_PANDAS_METHODS:
+            raise ValueError(f"Unsafe method call detected: '{method_name}' is not permitted.")
+        target = safe_eval_ast(node.func.value, df)
+        args = [safe_eval_ast(arg, df) for arg in node.args]
+        kwargs = {kw.arg: safe_eval_ast(kw.value, df) for kw in node.keywords if kw.arg}
+        method = getattr(target, method_name)
+        return method(*args, **kwargs)
+
+    if isinstance(node, ast.Compare):
+        left = safe_eval_ast(node.left, df)
+        if len(node.ops) != 1 or len(node.comparators) != 1:
+            raise ValueError("Only single comparison operations are supported.")
+        op = node.ops[0]
+        right = safe_eval_ast(node.comparators[0], df)
+        if isinstance(op, ast.Eq):
+            return left == right
+        elif isinstance(op, ast.NotEq):
+            return left != right
+        elif isinstance(op, ast.Lt):
+            return left < right
+        elif isinstance(op, ast.LtE):
+            return left <= right
+        elif isinstance(op, ast.Gt):
+            return left > right
+        elif isinstance(op, ast.GtE):
+            return left >= right
+        raise ValueError(f"Unsupported comparison operator: {type(op).__name__}")
+
+    if isinstance(node, ast.BinOp):
+        left = safe_eval_ast(node.left, df)
+        right = safe_eval_ast(node.right, df)
+        if isinstance(node.op, ast.BitAnd):
+            return left & right
+        elif isinstance(node.op, ast.BitOr):
+            return left | right
+        elif isinstance(node.op, ast.Add):
+            return left + right
+        elif isinstance(node.op, ast.Sub):
+            return left - right
+        elif isinstance(node.op, ast.Mult):
+            return left * right
+        elif isinstance(node.op, ast.Div):
+            return left / right
+        raise ValueError(f"Unsupported binary operator: {type(node.op).__name__}")
+
+    if isinstance(node, ast.UnaryOp):
+        operand = safe_eval_ast(node.operand, df)
+        if isinstance(node.op, ast.Invert):
+            return ~operand
+        elif isinstance(node.op, ast.USub):
+            return -operand
+        elif isinstance(node.op, ast.UAdd):
+            return +operand
+        raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+
+    raise ValueError(f"Unsafe code detected: {type(node).__name__} is not allowed.")
+
+
+def execute_structured_aggregation(
+    df: pd.DataFrame,
+    aggregation: str,
+    column: Optional[str] = None,
+    filter_column: Optional[str] = None,
+    filter_operator: Optional[str] = None,
+    filter_value: Any = None,
+) -> Any:
+    """Execute a structured filtering and aggregation operation directly via pandas."""
+    sub_df = df
+    if filter_column and filter_operator is not None:
+        if filter_column not in df.columns:
+            raise ValueError(f"Filter column '{filter_column}' not found in sheet columns: {list(df.columns)}")
+        series = sub_df[filter_column]
+        if filter_operator in ("==", "="):
+            sub_df = sub_df[series == filter_value]
+        elif filter_operator == "!=":
+            sub_df = sub_df[series != filter_value]
+        elif filter_operator == ">":
+            sub_df = sub_df[pd.to_numeric(series, errors="coerce") > float(filter_value)]
+        elif filter_operator == ">=":
+            sub_df = sub_df[pd.to_numeric(series, errors="coerce") >= float(filter_value)]
+        elif filter_operator == "<":
+            sub_df = sub_df[pd.to_numeric(series, errors="coerce") < float(filter_value)]
+        elif filter_operator == "<=":
+            sub_df = sub_df[pd.to_numeric(series, errors="coerce") <= float(filter_value)]
+        elif filter_operator.lower() == "contains":
+            sub_df = sub_df[series.astype(str).str.contains(str(filter_value), na=False)]
+        else:
+            raise ValueError(f"Unsupported filter operator: '{filter_operator}'.")
+
+    if column:
+        if column not in sub_df.columns:
+            raise ValueError(f"Aggregation column '{column}' not found in sheet columns: {list(sub_df.columns)}")
+        target = sub_df[column]
+    else:
+        target = sub_df
+
+    agg = aggregation.lower().strip()
+    if agg == "sum":
+        return pd.to_numeric(target, errors="coerce").sum()
+    elif agg in ("mean", "average", "avg"):
+        return pd.to_numeric(target, errors="coerce").mean()
+    elif agg == "count":
+        return target.count()
+    elif agg == "min":
+        return pd.to_numeric(target, errors="coerce").min()
+    elif agg == "max":
+        return pd.to_numeric(target, errors="coerce").max()
+    elif agg == "value_counts":
+        return target.value_counts()
+    else:
+        raise ValueError(
+            f"Unsupported aggregation operation: '{aggregation}'. Supported: sum, mean, count, min, max, value_counts."
+        )
 
 
 class ReadSheetInput(BaseModel):
@@ -68,20 +314,47 @@ class ReadSheetInput(BaseModel):
 
 class FilterAndAggregateInput(BaseModel):
     sheet_name: str = Field(..., description="Name of worksheet to aggregate.")
-    pandas_code: str = Field(..., description="Safe pandas expression on variable 'df'.")
+    # Structured input fields (preferred approach)
+    aggregation: Optional[str] = Field(
+        default=None,
+        description="Aggregation operation: sum, mean, average, count, min, max, value_counts."
+    )
+    column: Optional[str] = Field(
+        default=None,
+        description="Target column header to aggregate."
+    )
+    filter_column: Optional[str] = Field(
+        default=None,
+        description="Column header to filter rows on before aggregating."
+    )
+    filter_operator: Optional[str] = Field(
+        default=None,
+        description="Comparison operator for filter: ==, !=, >, >=, <, <=, contains."
+    )
+    filter_value: Optional[Union[str, int, float, bool]] = Field(
+        default=None,
+        description="Value to compare against for filtering."
+    )
+    # Safe expression input (strictly validated via AST, zero eval)
+    pandas_code: Optional[str] = Field(
+        default=None,
+        description="Safe pandas expression on variable 'df' (strictly AST validated, no arbitrary code execution)."
+    )
 
     @field_validator("sheet_name")
     def check_sheet_name(cls, v):
         return validate_no_formula_injection(v, "sheet_name")
 
+    @field_validator("column", "filter_column")
+    def check_column_identifiers(cls, v, info):
+        if v is not None:
+            return validate_no_formula_injection(v, info.field_name)
+        return v
+
     @field_validator("pandas_code")
     def check_pandas_code(cls, v):
-        blocked = [
-            "import", "os", "sys", "open", "eval", "exec", "__", "subprocess",
-            "globals", "locals", "getattr", "setattr", "delattr", "builtin",
-        ]
-        if any(kw in v for kw in blocked):
-            raise ValueError("Unsafe code detected. Only safe pandas operations on 'df' are allowed.")
+        if v is not None:
+            validate_safe_pandas_ast(v)
         return v
 
 
@@ -96,9 +369,9 @@ class UpdateCellInput(BaseModel):
     def check_identifiers(cls, v, info):
         return validate_no_formula_injection(v, info.field_name)
 
-    @field_validator("new_value")
-    def check_new_value(cls, v):
-        return validate_no_formula_injection(v, "new_value")
+    @field_validator("id_value", "new_value")
+    def check_values(cls, v, info):
+        return validate_no_formula_injection(v, info.field_name)
 
 
 class DeleteRowInput(BaseModel):
@@ -109,6 +382,10 @@ class DeleteRowInput(BaseModel):
     @field_validator("sheet_name", "id_column")
     def check_identifiers(cls, v, info):
         return validate_no_formula_injection(v, info.field_name)
+
+    @field_validator("id_value")
+    def check_id_value(cls, v):
+        return validate_no_formula_injection(v, "id_value")
 
 
 class SummarizeSheetInput(BaseModel):
@@ -225,29 +502,47 @@ class SheetTools:
     def filter_and_aggregate(self, input_str: str) -> str:
         """
         TOOL: filter_and_aggregate
-        Input: JSON string with keys:
-          - 'sheet_name': name of the worksheet
-          - 'pandas_code': a pandas expression using variable 'df' (no imports allowed)
-        Runs a safe pandas expression and returns the result as a string.
-        Example input: {"sheet_name": "Sales", "pandas_code": "df[df['Region']=='North']['Revenue'].sum()"}
+        Input: JSON string with either:
+          - Structured fields (preferred): 'sheet_name' (str), 'aggregation' (str: sum/mean/count/min/max/value_counts),
+            optional 'column' (str), 'filter_column' (str), 'filter_operator' (str: ==/!=/>/>=/</<=/contains), 'filter_value' (any).
+          - Or safe expression: 'sheet_name' (str), 'pandas_code' (str: safe expression on 'df').
+        Executes safe structured aggregation directly with pandas (zero arbitrary Python eval).
+        Example structured input: {"sheet_name": "Orders", "aggregation": "sum", "column": "Price", "filter_column": "Region", "filter_operator": "==", "filter_value": "North"}
+        Example expression input: {"sheet_name": "Sales", "pandas_code": "df[df['Region']=='North']['Revenue'].sum()"}
         """
         try:
-            params = json.loads(input_str)
-            sheet_name = params["sheet_name"]
-            code = params["pandas_code"]
-
-            # Security: block dangerous keywords
-            blocked = ["import", "os", "sys", "open", "eval", "exec", "__"]
-            if any(kw in code for kw in blocked):
-                return "Error: Unsafe code detected. Only pandas operations on 'df' are allowed."
+            params = json.loads(input_str) if isinstance(input_str, str) else input_str
+            sheet_name = params.get("sheet_name")
+            if not sheet_name:
+                return "Error: 'sheet_name' is required."
 
             df = self._get_df(sheet_name)
             if df is None:
                 return f"Sheet '{sheet_name}' not found."
 
-            result = eval(code, {"pd": pd}, {"df": df})  # noqa: S307 (sandboxed)
+            # Case 1: Structured aggregation (preferred)
+            if "aggregation" in params and params["aggregation"]:
+                result = execute_structured_aggregation(
+                    df=df,
+                    aggregation=params["aggregation"],
+                    column=params.get("column"),
+                    filter_column=params.get("filter_column"),
+                    filter_operator=params.get("filter_operator"),
+                    filter_value=params.get("filter_value"),
+                )
+            # Case 2: Safe AST-evaluated expression (zero eval)
+            elif "pandas_code" in params and params["pandas_code"]:
+                code = params["pandas_code"]
+                validate_safe_pandas_ast(code)
+                tree = ast.parse(code, mode="eval")
+                result = safe_eval_ast(tree, df)
+            else:
+                return "Error: Either 'aggregation' or 'pandas_code' must be provided."
+
             if isinstance(result, pd.DataFrame):
                 return result.head(50).to_markdown(index=False)
+            if isinstance(result, pd.Series):
+                return result.head(50).to_markdown()
             return str(result)
         except Exception as e:
             return f"Error during aggregation: {e}"
