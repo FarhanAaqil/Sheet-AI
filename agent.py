@@ -609,11 +609,16 @@ class SheetSenseAgent:
         messages = history + [HumanMessage(content=query)]
 
         try:
-            result = self._agent.invoke(
+            from retry_handler import execute_with_retry
+            result = execute_with_retry(
+                self._agent.invoke,
                 {"messages": messages},
                 config={"recursion_limit": 12},  # ~5 ReAct iterations
+                max_retries=3,
+                initial_delay=1.0,
             )
             # Extract the final AI response
+
             ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
             answer = ai_messages[-1].content if ai_messages else "No answer produced."
 

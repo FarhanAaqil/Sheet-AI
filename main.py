@@ -7,11 +7,14 @@
 
 import os
 import json
+import uuid
 import logging
+
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security.api_key import APIKeyHeader
+
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -60,6 +63,41 @@ async def get_api_key(key: Optional[str] = Security(api_key_header)):
     return key
 
 import database
+from rate_limiter import rate_limit
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+# ---------------------------------------------------------------------------
+# Global Exception Handlers (Architecture §7, PRD FR-9)
+# ---------------------------------------------------------------------------
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Pass-through for standard HTTP exceptions with headers (e.g. 429 Retry-After)."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers or {},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Sanitized global error handler: logs stack trace securely with an error ID
+    and returns a user-safe message without leaking system internals.
+    """
+    error_id = str(uuid.uuid4())[:8]
+    logger.error(
+        f"[UnhandledException] error_id={error_id} path={request.url.path} error={exc}",
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "An internal server error occurred.",
+            "error_id": error_id,
+        },
+    )
 
 # ---------------------------------------------------------------------------
 # Singleton agent (loaded once at startup)
@@ -83,6 +121,7 @@ def get_agent() -> SheetSenseAgent:
     if _agent is None:
         raise HTTPException(status_code=503, detail="Agent not initialized yet.")
     return _agent
+
 
 # ---------------------------------------------------------------------------
 # Request / Response models
@@ -135,8 +174,9 @@ def health(agent: SheetSenseAgent = Depends(get_agent), _key=Depends(get_api_key
 @app.post("/chat", response_model=ChatResponse, tags=["Agent"])
 def chat(
     request: ChatRequest,
-    agent: SheetSenseAgent = Depends(get_agent),
+    _rate_limit: bool = Depends(rate_limit(max_requests=60, window_seconds=60, endpoint_group="chat")),
     _key: str = Depends(get_api_key),
+    agent: SheetSenseAgent = Depends(get_agent),
 ):
     """
     Send a plain-English command to the SheetSense AI agent.
@@ -149,22 +189,19 @@ def chat(
     This single endpoint enables integration with any frontend or workflow.
     """
     logger.info(f"[{request.session_id}] Query: {request.message}")
-    try:
-        result = agent.run(
-            user_message=request.message,
-            session_id=request.session_id,
-            sheet_name=request.sheet_name,
-        )
-        return ChatResponse(
-            answer=result["answer"],
-            session_id=request.session_id,
-            tool_calls_made=result.get("tools_used", []),
-            raw_steps=result.get("intermediate_steps"),
-            pending_action=result.get("pending_action"),
-        )
-    except Exception as e:
-        logger.error(f"Agent error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
+    result = agent.run(
+        user_message=request.message,
+        session_id=request.session_id,
+        sheet_name=request.sheet_name,
+    )
+    return ChatResponse(
+        answer=result["answer"],
+        session_id=request.session_id,
+        tool_calls_made=result.get("tools_used", []),
+        raw_steps=result.get("intermediate_steps"),
+        pending_action=result.get("pending_action"),
+    )
+
 
 
 @app.get("/sheets", tags=["Agent"])
@@ -212,9 +249,12 @@ class ConfirmActionResponse(BaseModel):
 )
 def confirm_action(
     action_id: str,
-    agent: SheetSenseAgent = Depends(get_agent),
+    _rate_limit: bool = Depends(rate_limit(max_requests=20, window_seconds=60, endpoint_group="confirm")),
     _key: str = Depends(get_api_key),
+    agent: SheetSenseAgent = Depends(get_agent),
 ):
+
+
     """
     CONFIRMATION GATE: The ONLY code path that executes destructive Google Sheets writes.
 
