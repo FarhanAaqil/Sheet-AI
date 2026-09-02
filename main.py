@@ -64,7 +64,7 @@ async def get_api_key(key: Optional[str] = Security(api_key_header)):
 
 import database
 from rate_limiter import rate_limit
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # ---------------------------------------------------------------------------
@@ -155,9 +155,14 @@ class HealthResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/", tags=["Meta"])
+@app.get("/", response_class=HTMLResponse, tags=["UI"])
 def root():
-    return {"message": "SheetSense AI is running. POST to /chat to query your spreadsheet."}
+    """Serves the Stitch-designed interactive desktop dashboard."""
+    static_file = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    if os.path.exists(static_file):
+        with open(static_file, "r", encoding="utf-8") as f:
+            return f.read()
+    return '{"message": "SheetSense AI is running. POST to /chat to query your spreadsheet."}'
 
 
 @app.get("/health", response_model=HealthResponse, tags=["Meta"])

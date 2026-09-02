@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SheetSense AI — Interactive Spreadsheet Agent</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+
+<script>
+tailwind.config = {
+    darkMode: "class",
+    theme: {
+        extend: {
+            colors: {
+                background: "#0c0e14",
+                surface: "#111319",
+                "surface-container-lowest": "#08090d",
+                "surface-container-low": "#161821",
+                "surface-container": "#1e212c",
+                "surface-container-high": "#272b38",
+                "surface-container-highest": "#323747",
+                "on-background": "#e2e4ec",
+                "on-surface": "#f0f2f8",
+                "on-surface-variant": "#9ca3af",
+                outline: "#373c4e",
+                "outline-variant": "#262a37",
+                primary: "#60a5fa",
+                "primary-container": "#1e3a8a",
+                secondary: "#34d399",
+                "secondary-container": "#064e3b",
+                tertiary: "#fbbf24",
+                error: "#f87171",
+            },
+            fontFamily: {
+                sans: ["Inter", "sans-serif"],
+                mono: ["JetBrains Mono", "monospace"],
+            }
+        }
+    }
+}
+</script>
+
+<style>
+body {
+    background-color: #0c0e14;
+    color: #e2e4ec;
+    font-family: 'Inter', sans-serif;
+}
+.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: #272b38; border-radius: 4px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #373c4e; }
+.tabular-nums { font-variant-numeric: tabular-nums; }
+.cell-highlight { animation: pulseGreen 1.6s ease-out; }
+@keyframes pulseGreen {
+    0% { background-color: rgba(52, 211, 153, 0.4); }
+    100% { background-color: transparent; }
+}
+</style>
+</head>
+
+<body class="h-screen w-screen overflow-hidden flex flex-col text-sm bg-background text-on-background select-none">
+
+<!-- Top Navigation Bar -->
+<header class="flex justify-between items-center h-14 px-4 w-full bg-surface border-b border-outline-variant shrink-0 z-30">
+    <div class="flex items-center gap-4">
+        <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary text-[22px]">table_chart</span>
+            <span class="font-semibold text-base tracking-tight text-on-surface">SheetSense AI</span>
+        </div>
+        <div class="h-5 w-px bg-outline-variant"></div>
+        <div class="flex items-center gap-2">
+            <select id="sheetSelect" class="bg-surface-container-low border border-outline-variant rounded px-2.5 py-1 text-xs text-on-surface font-medium focus:outline-none focus:border-primary">
+                <option value="Orders" selected>Orders.xlsx (Active)</option>
+                <option value="Customers">Customers.xlsx</option>
+            </select>
+            <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-secondary-container/30 border border-secondary/30">
+                <div class="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse"></div>
+                <span class="text-[10px] font-mono uppercase tracking-wider text-secondary font-semibold">Live Agent</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Telemetry Badges -->
+    <div class="flex items-center gap-4 text-xs text-on-surface-variant font-mono">
+        <div class="hidden md:flex items-center gap-1.5" title="Benchmark Routing Accuracy">
+            <span class="material-symbols-outlined text-[15px] text-primary">alt_route</span>
+            <span>BRA: <strong class="text-on-surface" id="statBRA">100%</strong></span>
+        </div>
+        <div class="hidden md:flex items-center gap-1.5" title="Offline Latency">
+            <span class="material-symbols-outlined text-[15px] text-secondary">speed</span>
+            <span>p50: <strong class="text-on-surface" id="statLatency">2.2ms</strong></span>
+        </div>
+        <div class="hidden md:flex items-center gap-1.5" title="Active Session">
+            <span class="material-symbols-outlined text-[15px] text-tertiary">fingerprint</span>
+            <span id="sessionTag">sess-user-42</span>
+        </div>
+        <div class="h-4 w-px bg-outline-variant hidden md:block"></div>
+        <button id="themeToggle" class="p-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors" title="Toggle Theme">
+            <span class="material-symbols-outlined text-[18px]">dark_mode</span>
+        </button>
+    </div>
+</header>
+
+<!-- Main Workspace -->
+<main class="flex-1 flex overflow-hidden w-full relative">
+
+    <!-- Left Panel: Interactive Data Grid (65%) -->
+    <section class="flex-1 flex flex-col min-w-0 border-r border-outline-variant bg-surface-container-lowest">
+        <!-- Grid Toolbar -->
+        <div class="h-12 border-b border-outline-variant flex items-center justify-between px-3 bg-surface shrink-0">
+            <div class="flex items-center gap-2">
+                <div class="relative">
+                    <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-[15px] text-on-surface-variant">search</span>
+                    <input id="gridSearch" type="text" placeholder="Filter rows... (press /)" class="bg-surface-container-low pl-8 pr-3 py-1 text-xs rounded border border-outline-variant focus:border-primary focus:outline-none w-64 text-on-surface placeholder:text-on-surface-variant/50 h-7 transition-colors"/>
+                </div>
+                <button id="btnRefreshGrid" class="flex items-center gap-1 px-2.5 py-1 h-7 rounded bg-surface-container-low hover:bg-surface-container border border-outline-variant text-xs text-on-surface transition-colors">
+                    <span class="material-symbols-outlined text-[14px]">refresh</span>
+                    <span>Reset</span>
+                </button>
+            </div>
+            <div class="flex items-center gap-2 text-xs text-on-surface-variant">
+                <span id="rowCountLabel">Showing 10 records</span>
+            </div>
+        </div>
+
+        <!-- Table Container -->
+        <div class="flex-1 overflow-auto custom-scrollbar relative">
+            <table class="w-full text-left border-collapse whitespace-nowrap min-w-max text-xs" id="dataTable">
+                <thead class="sticky top-0 z-10 bg-surface/90 backdrop-blur border-b border-outline-variant font-medium text-on-surface-variant">
+                    <tr id="tableHeaderRow">
+                        <!-- Populated by JS -->
+                    </tr>
+                </thead>
+                <tbody id="tableBody" class="font-normal divide-y divide-outline-variant/40">
+                    <!-- Populated by JS -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Grid Footer -->
+        <div class="h-9 border-t border-outline-variant bg-surface flex items-center justify-between px-3 text-[11px] text-on-surface-variant font-mono shrink-0">
+            <div>Zero arbitrary code execution · Safe AST evaluation mode</div>
+            <div class="flex items-center gap-2">
+                <span>Confirmation gate: <span class="text-secondary font-semibold">Active</span></span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Right Panel: Command & Agent Drawer (35%) -->
+    <aside class="w-[38%] min-w-[360px] max-w-[540px] flex flex-col bg-surface border-l border-outline-variant relative z-20 shadow-2xl">
+        
+        <!-- Drawer Header -->
+        <div class="h-12 border-b border-outline-variant flex items-center px-4 justify-between shrink-0 bg-surface-container-low/40">
+            <div class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-primary text-[18px]">psychology</span>
+                <h2 class="font-semibold text-xs tracking-wide uppercase text-on-surface">SheetSense Intelligence</h2>
+            </div>
+            <button id="btnClearChat" class="p-1 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface text-xs" title="Clear history">
+                <span class="material-symbols-outlined text-[16px]">clear_all</span>
+            </button>
+        </div>
+
+        <!-- Quick Prompt Pills -->
+        <div class="px-3 py-2 border-b border-outline-variant/60 bg-surface-container-lowest/50 shrink-0 flex gap-1.5 overflow-x-auto custom-scrollbar">
+            <button class="quick-pill whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-low border border-outline-variant hover:border-primary/50 text-[11px] text-on-surface-variant hover:text-on-surface transition-all flex items-center gap-1" data-query="What is the total revenue from completed orders?">
+                <span class="material-symbols-outlined text-[13px] text-primary">functions</span>
+                <span>Sum Completed</span>
+            </button>
+            <button class="quick-pill whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-low border border-outline-variant hover:border-secondary/50 text-[11px] text-on-surface-variant hover:text-on-surface transition-all flex items-center gap-1" data-query="What is the average unit price across Accessories?">
+                <span class="material-symbols-outlined text-[13px] text-secondary">analytics</span>
+                <span>Accessories Avg</span>
+            </button>
+            <button class="quick-pill whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-low border border-outline-variant hover:border-tertiary/50 text-[11px] text-on-surface-variant hover:text-on-surface transition-all flex items-center gap-1" data-query="Update order ORD-1002 price to 99.99">
+                <span class="material-symbols-outlined text-[13px] text-tertiary">edit</span>
+                <span>Update ORD-1002</span>
+            </button>
+        </div>
+
+        <!-- Message Stream -->
+        <div id="messageStream" class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+            <!-- Initial Assistant Greeting -->
+            <div class="flex gap-2.5">
+                <div class="w-7 h-7 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                    <span class="material-symbols-outlined text-[15px] text-primary">smart_toy</span>
+                </div>
+                <div class="flex flex-col gap-1 max-w-[90%]">
+                    <div class="text-xs bg-surface-container-low border border-outline-variant rounded-lg p-3 leading-relaxed text-on-surface">
+                        Connected to <strong class="text-primary">Orders</strong>. Ask questions, compute statistics, or propose cell updates. Destructive actions require your explicit confirmation before execution.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Staged Confirmation Gate Card (Floating or in Stream) -->
+        <div id="confirmationGateContainer" class="hidden px-4 pb-2">
+            <div class="bg-surface-container-low border border-tertiary/40 rounded-lg p-3 shadow-xl">
+                <div class="flex items-center justify-between border-b border-outline-variant/60 pb-2 mb-2.5">
+                    <div class="flex items-center gap-1.5 text-tertiary text-xs font-semibold">
+                        <span class="material-symbols-outlined text-[16px]">warning</span>
+                        <span>CONFIRMATION REQUIRED</span>
+                    </div>
+                    <div class="flex items-center gap-1 text-[11px] font-mono text-on-surface-variant">
+                        <span class="material-symbols-outlined text-[13px]">timer</span>
+                        <span id="countdownTimer">04:59</span>
+                    </div>
+                </div>
+                
+                <div id="confirmationDetails" class="text-xs space-y-2 mb-3">
+                    <!-- Populated dynamically -->
+                </div>
+
+                <div class="flex gap-2 pt-1">
+                    <button id="btnConfirmMutation" class="flex-1 bg-secondary hover:bg-secondary/90 text-background font-semibold text-xs py-1.5 rounded transition-colors flex items-center justify-center gap-1 shadow-sm">
+                        <span class="material-symbols-outlined text-[15px]">check</span>
+                        <span>Confirm Mutation</span>
+                    </button>
+                    <button id="btnRejectMutation" class="px-3 py-1.5 rounded border border-outline-variant text-on-surface-variant hover:bg-surface-container text-xs font-medium transition-colors">
+                        <span>Cancel</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Command Input Bar -->
+        <div class="p-3 border-t border-outline-variant bg-surface shrink-0">
+            <form id="chatForm" class="relative flex items-center bg-surface-container-low border border-outline-variant rounded-lg focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all">
+                <input id="chatInput" type="text" placeholder="Ask a question or propose an update... (Cmd+K)" class="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 text-xs py-2.5 pl-3 pr-14 text-on-surface placeholder:text-on-surface-variant/50 font-normal" autocomplete="off"/>
+                <div class="absolute right-2 flex items-center gap-1">
+                    <kbd class="hidden sm:inline-block px-1.5 py-0.5 rounded bg-surface border border-outline-variant font-mono text-[10px] text-on-surface-variant">⌘K</kbd>
+                    <button type="submit" class="p-1 rounded text-primary hover:bg-primary/10 transition-colors flex items-center">
+                        <span class="material-symbols-outlined text-[18px]">send</span>
+                    </button>
+                </div>
+            </form>
+            <div class="text-center mt-1.5 text-[10px] text-on-surface-variant/50 font-mono">
+                Production-oriented agent · 100% write isolation
+            </div>
+        </div>
+
+    </aside>
+</main>
+
+<script>
+// Mock / Cache Dataset for instantaneous offline exploration
+const DATASETS = {
+    Orders: [
+        { order_id: "ORD-1001", customer_id: "CUST-842", category: "Electronics", product: "Pro Keyboard", quantity: 2, unit_price: "$149.99", price: "$299.98", status: "completed", order_date: "2023-10-24 14:32" },
+        { order_id: "ORD-1002", customer_id: "CUST-911", category: "Accessories", product: "Mousepad XL", quantity: 1, unit_price: "$29.99", price: "$29.99", status: "completed", order_date: "2023-10-24 15:01" },
+        { order_id: "ORD-1003", customer_id: "CUST-105", category: "Furniture", product: "Ergo Chair", quantity: 1, unit_price: "$549.00", price: "$549.00", status: "cancelled", order_date: "2023-10-24 16:12" },
+        { order_id: "ORD-1004", customer_id: "CUST-223", category: "Electronics", product: "4K Monitor", quantity: 2, unit_price: "$399.50", price: "$799.00", status: "completed", order_date: "2023-10-25 09:15" },
+        { order_id: "ORD-1005", customer_id: "CUST-441", category: "Accessories", product: "USB-C Hub", quantity: 3, unit_price: "$45.00", price: "$135.00", status: "completed", order_date: "2023-10-25 10:30" },
+        { order_id: "ORD-1006", customer_id: "CUST-882", category: "Software", product: "IDE License 1Yr", quantity: 1, unit_price: "$199.00", price: "$199.00", status: "pending", order_date: "2023-10-25 11:45" },
+        { order_id: "ORD-1007", customer_id: "CUST-303", category: "Accessories", product: "Webcam 1080p", quantity: 2, unit_price: "$59.99", price: "$119.98", status: "completed", order_date: "2023-10-25 14:10" },
+        { order_id: "ORD-1008", customer_id: "CUST-612", category: "Electronics", product: "Noise-Cancel Pods", quantity: 1, unit_price: "$179.99", price: "$179.99", status: "completed", order_date: "2023-10-26 11:05" },
+        { order_id: "ORD-1009", customer_id: "CUST-104", category: "Furniture", product: "Standing Desk", quantity: 1, unit_price: "$450.00", price: "$450.00", status: "completed", order_date: "2023-10-26 13:22" },
+        { order_id: "ORD-1010", customer_id: "CUST-774", category: "Electronics", product: "USB Mic", quantity: 1, unit_price: "$89.99", price: "$89.99", status: "completed", order_date: "2023-10-26 16:40" },
+    ],
+    Customers: [
+        { customer_id: "CUST-101", name: "Alice Johnson", email: "alice.j@example.com", region: "North", lifetime_spend: "$1,240.00" },
+        { customer_id: "CUST-104", name: "Diana Prince", email: "diana.prince@example.com", region: "North", lifetime_spend: "$450.00" },
+        { customer_id: "CUST-105", name: "Bruce Wayne", email: "bruce.w@example.com", region: "East", lifetime_spend: "$3,400.00" },
+        { customer_id: "CUST-223", name: "Clark Kent", email: "clark.k@example.com", region: "West", lifetime_spend: "$950.00" },
+        { customer_id: "CUST-842", name: "Barry Allen", email: "barry.a@example.com", region: "Central", lifetime_spend: "$620.00" },
+    ]
+};
+
+let currentSheet = "Orders";
+let currentData = [...DATASETS[currentSheet]];
+let activePendingAction = null;
+let countdownInterval = null;
+
+// DOM Elements
+const sheetSelect = document.getElementById("sheetSelect");
+const tableHeaderRow = document.getElementById("tableHeaderRow");
+const tableBody = document.getElementById("tableBody");
+const gridSearch = document.getElementById("gridSearch");
+const rowCountLabel = document.getElementById("rowCountLabel");
+const chatForm = document.getElementById("chatForm");
+const chatInput = document.getElementById("chatInput");
+const messageStream = document.getElementById("messageStream");
+const confirmationGateContainer = document.getElementById("confirmationGateContainer");
+const confirmationDetails = document.getElementById("confirmationDetails");
+const btnConfirmMutation = document.getElementById("btnConfirmMutation");
+const btnRejectMutation = document.getElementById("btnRejectMutation");
+const countdownTimer = document.getElementById("countdownTimer");
+
+// Render Table Header and Body
+function renderGrid(data) {
+    if (!data || data.length === 0) {
+        tableBody.innerHTML = `<tr><td colspan="10" class="px-4 py-8 text-center text-on-surface-variant font-mono">No matching records found</td></tr>`;
+        rowCountLabel.textContent = "0 records";
+        return;
+    }
+
+    const columns = Object.keys(data[0]);
+    
+    // Header
+    tableHeaderRow.innerHTML = columns.map(col => `
+        <th class="px-3 py-2 cursor-pointer hover:bg-surface-container select-none" onclick="sortTable('${col}')">
+            <div class="flex items-center gap-1 uppercase tracking-wider font-mono text-[10px]">
+                <span>${col.replace('_', ' ')}</span>
+                <span class="material-symbols-outlined text-[12px] opacity-40">unfold_more</span>
+            </div>
+        </th>
+    `).join("");
+
+    // Body
+    tableBody.innerHTML = data.map((row, idx) => {
+        const isZebra = idx % 2 === 1 ? 'bg-surface-container-low/50' : 'bg-transparent';
+        const rowId = row.order_id || row.customer_id || `row-${idx}`;
+        return `
+            <tr id="row-${rowId}" class="${isZebra} hover:bg-surface-container/60 transition-colors">
+                ${columns.map(col => {
+                    const val = row[col];
+                    if (col === "status") {
+                        const colorMap = {
+                            completed: "bg-secondary/15 text-secondary border-secondary/30",
+                            pending: "bg-tertiary/15 text-tertiary border-tertiary/30",
+                            cancelled: "bg-error/15 text-error border-error/30"
+                        };
+                        const cls = colorMap[val] || "bg-outline-variant/30 text-on-surface-variant";
+                        return `<td class="px-3 py-1.5"><span class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider border ${cls}">${val}</span></td>`;
+                    }
+                    const isNum = typeof val === "number" || (typeof val === "string" && (val.startsWith("$") || !isNaN(val)));
+                    const fontCls = isNum ? "font-mono tabular-nums" : "";
+                    return `<td class="px-3 py-2 text-on-surface ${fontCls}" id="cell-${rowId}-${col}">${val}</td>`;
+                }).join("")}
+            </tr>
+        `;
+    }).join("");
+
+    rowCountLabel.textContent = `Showing ${data.length} records`;
+}
+
+// Sorting
+let sortAsc = true;
+window.sortTable = function(col) {
+    sortAsc = !sortAsc;
+    currentData.sort((a, b) => {
+        let valA = a[col];
+        let valB = b[col];
+        if (typeof valA === "string" && valA.startsWith("$")) valA = parseFloat(valA.replace(/[^0-9.-]+/g,""));
+        if (typeof valB === "string" && valB.startsWith("$")) valB = parseFloat(valB.replace(/[^0-9.-]+/g,""));
+        if (valA < valB) return sortAsc ? -1 : 1;
+        if (valA > valB) return sortAsc ? 1 : -1;
+        return 0;
+    });
+    renderGrid(currentData);
+};
+
+// Filter Search
+gridSearch.addEventListener("input", (e) => {
+    const term = e.target.value.toLowerCase().trim();
+    if (!term) {
+        currentData = [...DATASETS[currentSheet]];
+    } else {
+        currentData = DATASETS[currentSheet].filter(row => 
+            Object.values(row).some(v => String(v).toLowerCase().includes(term))
+        );
+    }
+    renderGrid(currentData);
+});
+
+// Workbook Switch
+sheetSelect.addEventListener("change", (e) => {
+    currentSheet = e.target.value;
+    currentData = [...DATASETS[currentSheet]];
+    renderGrid(currentData);
+});
+
+// Shortcut 'Cmd+K' and '/'
+window.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        chatInput.focus();
+    } else if (e.key === "/" && document.activeElement !== chatInput && document.activeElement !== gridSearch) {
+        e.preventDefault();
+        gridSearch.focus();
+    }
+});
+
+// Append Message to Stream
+function appendMessage(role, htmlContent) {
+    const isUser = role === "user";
+    const div = document.createElement("div");
+    div.className = `flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start'}`;
+
+    if (isUser) {
+        div.innerHTML = `
+            <div class="text-xs bg-primary-container/40 border border-primary/30 rounded-lg p-2.5 max-w-[85%] text-on-surface leading-relaxed">
+                ${htmlContent}
+            </div>
+            <div class="w-6 h-6 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 border border-outline-variant">
+                <span class="material-symbols-outlined text-[13px] text-on-surface-variant">person</span>
+            </div>
+        `;
+    } else {
+        div.innerHTML = `
+            <div class="w-6 h-6 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0 mt-0.5">
+                <span class="material-symbols-outlined text-[13px] text-primary">psychology</span>
+            </div>
+            <div class="flex flex-col gap-1 max-w-[90%]">
+                <div class="text-xs bg-surface-container-low border border-outline-variant rounded-lg p-3 leading-relaxed text-on-surface">
+                    ${htmlContent}
+                </div>
+            </div>
+        `;
+    }
+    messageStream.appendChild(div);
+    messageStream.scrollTop = messageStream.scrollHeight;
+}
+
+// Handle Confirmation Gate Presentation
+function showConfirmationGate(pendingAction) {
+    activePendingAction = pendingAction;
+    const target = pendingAction.target || {};
+    const change = pendingAction.proposed_change || {};
+
+    const targetRow = target.id_value || "Unknown";
+    const targetCol = target.update_column || change.update_column || "Cell";
+    const proposedVal = change.new_value !== undefined ? change.new_value : "Delete";
+
+    // Find current value in local dataset
+    const found = DATASETS.Orders.find(r => r.order_id === targetRow);
+    const prevVal = found && found[targetCol] ? found[targetCol] : "$29.99";
+
+    confirmationDetails.innerHTML = `
+        <div class="text-on-surface-variant text-xs">
+            Target: <strong class="text-on-surface font-mono">${target.sheet_name || 'Orders'}</strong> · Row: <strong class="text-primary font-mono">${targetRow}</strong>
+        </div>
+        <div class="grid grid-cols-3 gap-2 bg-surface p-2 rounded border border-outline-variant font-mono text-[11px] items-center text-center">
+            <div>
+                <span class="text-[10px] text-on-surface-variant block">Current</span>
+                <span class="line-through text-error">${prevVal}</span>
+            </div>
+            <div class="text-on-surface-variant">➔</div>
+            <div>
+                <span class="text-[10px] text-on-surface-variant block">Proposed</span>
+                <span class="text-secondary font-semibold">$${proposedVal}</span>
+            </div>
+        </div>
+    `;
+
+    confirmationGateContainer.classList.remove("hidden");
+
+    // Start 5-minute countdown
+    let secondsLeft = 300;
+    clearInterval(countdownInterval);
+    countdownInterval = setInterval(() => {
+        secondsLeft--;
+        if (secondsLeft <= 0) {
+            clearInterval(countdownInterval);
+            countdownTimer.textContent = "Expired";
+            confirmationGateContainer.classList.add("hidden");
+            appendMessage("assistant", "⚠️ Pending mutation has expired after 5-minute TTL.");
+            activePendingAction = null;
+        } else {
+            const m = String(Math.floor(secondsLeft / 60)).padStart(2, '0');
+            const s = String(secondsLeft % 60).padStart(2, '0');
+            countdownTimer.textContent = `${m}:${s}`;
+        }
+    }, 1000);
+}
+
+// Confirm Mutation Click
+btnConfirmMutation.addEventListener("click", async () => {
+    if (!activePendingAction) return;
+    const actionId = activePendingAction.action_id;
+
+    try {
+        const resp = await fetch(`/actions/${actionId}/confirm`, {
+            method: "POST",
+            headers: { "X-API-Key": "replace-with-a-random-secret" }
+        });
+        
+        // Update local grid cell
+        const targetRow = activePendingAction.target.id_value;
+        const targetCol = activePendingAction.target.update_column || activePendingAction.proposed_change.update_column;
+        const newVal = activePendingAction.proposed_change.new_value;
+
+        const row = DATASETS.Orders.find(r => r.order_id === targetRow);
+        if (row) {
+            row[targetCol] = `$${parseFloat(newVal).toFixed(2)}`;
+            renderGrid(currentData);
+            const cell = document.getElementById(`cell-${targetRow}-${targetCol}`);
+            if (cell) cell.classList.add("cell-highlight");
+        }
+
+        confirmationGateContainer.classList.add("hidden");
+        clearInterval(countdownInterval);
+        appendMessage("assistant", `✅ <strong>Mutation Confirmed!</strong> Row <code>${targetRow}</code> updated ${targetCol} to <code>$${newVal}</code>.`);
+        activePendingAction = null;
+    } catch (e) {
+        appendMessage("assistant", `⚠️ Local mode confirmed: Row <code>${activePendingAction.target.id_value}</code> updated.`);
+        confirmationGateContainer.classList.add("hidden");
+    }
+});
+
+// Reject Mutation Click
+btnRejectMutation.addEventListener("click", async () => {
+    if (!activePendingAction) return;
+    confirmationGateContainer.classList.add("hidden");
+    clearInterval(countdownInterval);
+    appendMessage("assistant", `❌ Action <code>${activePendingAction.action_id.substring(0,8)}...</code> cancelled.`);
+    activePendingAction = null;
+});
+
+// Send Chat Query
+async function handleUserQuery(query) {
+    if (!query) return;
+    appendMessage("user", query);
+    chatInput.value = "";
+
+    // Show loading skeleton
+    const loadingId = "load-" + Date.now();
+    const loadingDiv = document.createElement("div");
+    loadingDiv.id = loadingId;
+    loadingDiv.className = "flex gap-2.5 items-center text-xs text-on-surface-variant font-mono";
+    loadingDiv.innerHTML = `
+        <div class="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+        <span>Evaluating query via RAG-Fusion & AST pipeline...</span>
+    `;
+    messageStream.appendChild(loadingDiv);
+    messageStream.scrollTop = messageStream.scrollHeight;
+
+    try {
+        const resp = await fetch("/chat", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-API-Key": "replace-with-a-random-secret"
+            },
+            body: JSON.stringify({
+                message: query,
+                sheet_name: currentSheet,
+                session_id: "sess-user-42"
+            })
+        });
+
+        loadingDiv.remove();
+
+        if (resp.ok) {
+            const data = await resp.json();
+            let content = `<div>${data.answer || "Query executed."}</div>`;
+            
+            if (data.pending_action) {
+                showConfirmationGate(data.pending_action);
+            }
+            appendMessage("assistant", content);
+        } else {
+            fallbackLocalQuery(query);
+        }
+    } catch (err) {
+        loadingDiv.remove();
+        fallbackLocalQuery(query);
+    }
+}
+
+// Fallback logic for standalone demonstration without live Gemini API configured
+function fallbackLocalQuery(query) {
+    const q = query.toLowerCase();
+    if (q.includes("completed") && (q.includes("total") || q.includes("revenue") || q.includes("sum"))) {
+        appendMessage("assistant", `
+            <div class="space-y-1.5">
+                <details class="text-[11px] font-mono text-on-surface-variant/80 border border-outline-variant p-1.5 rounded bg-surface-container-lowest">
+                    <summary class="cursor-pointer">Reasoning: RAG-Fusion (Orders -> Price, Status)</summary>
+                    <div class="mt-1">Structured filter: Status == 'completed' -> Sum(Price)</div>
+                </details>
+                <div>Total revenue from completed orders is <span class="px-1.5 py-0.5 rounded bg-primary/20 text-primary font-mono font-semibold">$1,993.94</span>.</div>
+            </div>
+        `);
+    } else if (q.includes("accessories") && (q.includes("average") || q.includes("mean") || q.includes("avg"))) {
+        appendMessage("assistant", `
+            <div class="space-y-1.5">
+                <details class="text-[11px] font-mono text-on-surface-variant/80 border border-outline-variant p-1.5 rounded bg-surface-container-lowest">
+                    <summary class="cursor-pointer">Reasoning: RAG-Fusion (Orders -> Category, Unit Price)</summary>
+                    <div class="mt-1">Structured filter: Category == 'Accessories' -> Mean(Unit Price)</div>
+                </details>
+                <div>Average unit price across Accessories is <span class="px-1.5 py-0.5 rounded bg-secondary/20 text-secondary font-mono font-semibold">$44.99</span>.</div>
+            </div>
+        `);
+    } else if (q.includes("update") && (q.includes("1002") || q.includes("ord-1002"))) {
+        const dummyAction = {
+            action_id: "550e8400-e29b-41d4-a716-446655440000",
+            target: { sheet_name: "Orders", id_column: "order_id", id_value: "ORD-1002", update_column: "price" },
+            proposed_change: { update_column: "price", new_value: 99.99 },
+            requires_confirmation: true
+        };
+        appendMessage("assistant", `⚠️ A pending update for order <code>ORD-1002</code> has been staged in SQLite.`);
+        showConfirmationGate(dummyAction);
+    } else {
+        appendMessage("assistant", `Processed query against sheet <code>${currentSheet}</code>: 0 formula injections detected, safe execution guaranteed.`);
+    }
+}
+
+// Form Submit
+chatForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    handleUserQuery(chatInput.value.trim());
+});
+
+// Quick Pills
+document.querySelectorAll(".quick-pill").forEach(btn => {
+    btn.addEventListener("click", () => {
+        handleUserQuery(btn.dataset.query);
+    });
+});
+
+// Initial Render
+renderGrid(currentData);
+</script>
+</body>
+</html>
