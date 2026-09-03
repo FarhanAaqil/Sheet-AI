@@ -1,41 +1,100 @@
-# SheetSense AI — Production-Oriented Conversational Spreadsheet Agent
+# SheetSense AI — Conversational Spreadsheet Agent
 
 [![CI Pipeline](https://github.com/FarhanAaqil/Sheet-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/FarhanAaqil/Sheet-AI/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)
 ![LangChain](https://img.shields.io/badge/LangChain-ReAct-green.svg)
 ![Redis](https://img.shields.io/badge/Redis-7.0-red.svg)
 ![Tests](https://img.shields.io/badge/tests-84%20passed-brightgreen.svg)
 
-> **Production-oriented conversational AI agent over live Google Sheets featuring schema RAG-Fusion, isolated write execution, human-in-the-loop confirmation gates, and multi-worker session memory.**
+> **Production-ready conversational AI agent over live Google Sheets featuring schema RAG-Fusion, physically isolated write execution, cryptographic human-in-the-loop confirmation gates, and distributed session memory.**
 
 ---
 
-## 1. Executive Summary & Verified Benchmark Scorecard
-
-SheetSense AI enables non-technical stakeholders to query, analyze, and mutate live Google Sheets data through plain-English dialogue without writing SQL or spreadsheet formulas. Unlike naive LLM wrappers, SheetSense AI enforces strict write isolation, 100% confirmation gating on destructive mutations, and comprehensive injection defense.
-
-All performance metrics below are empirically measured and verified via our automated evaluation harness ([eval_harness.py](eval_harness.py)) across 30 benchmark tasks ([tests/eval_dataset.json](tests/eval_dataset.json)):
-
-| Evaluation Metric | Target Threshold | Verified Empirical Score | Verification Status |
-|---|---|---|---|
-| **Benchmark Routing Accuracy (BRA)** | $\ge 90.0\%$ | **100.0%** (30/30) | ✅ Exceeds Target |
-| **Execution Accuracy (EA)** | $\ge 85.0\%$ | **93.3%** (28/30) | ✅ Exceeds Target |
-| **Confirmation Gate Adherence (CGA)** | **100.0%** | **100.0%** (4/4 gated) | ✅ **0 direct writes permitted** |
-| **Injection Block Rate (IBR)** | **100.0%** | **100.0%** (4/4 blocked) | ✅ **0 formula/code exploits** |
-| **Median Latency ($p_{50}$)** | $< 3.0\,\text{s}$ | **~2.2 ms** (offline benchmark) | ✅ Optimal |
-| **95th Percentile Latency ($p_{95}$)** | $< 6.0\,\text{s}$ | **~7.0 ms** (offline benchmark) | ✅ Optimal |
-
-*Full evaluation report, category breakdowns, and methodology are documented in [docs/eval_report.md](docs/eval_report.md) and [docs/audit.md](docs/audit.md).*
+### Quick Navigation
+[⚡ Quickstart](#1-quickstart-under-2-minutes) • [✨ Key Capabilities](#2-key-capabilities) • [🏗️ System Architecture](#3-system-architecture) • [🛡️ Safety & Security](#4-safety--security-guardrails) • [📡 REST API Reference](#5-rest-api-reference) • [🖥️ Web Dashboards](#6-web-dashboards) • [📊 Benchmark Scorecard](#7-verified-benchmark-scorecard) • [🧪 Testing](#8-testing--verification) • [📁 Project Structure](#9-repository-structure) • [📄 License](#10-license)
 
 ---
 
-## 2. System Architecture
+## 1. Quickstart (Under 2 Minutes)
+
+Get SheetSense AI running locally in under two minutes using either Docker Compose or a standard Python virtual environment.
+
+### Option A: Docker Compose (Recommended)
+
+```bash
+# 1. Clone repository
+git clone https://github.com/FarhanAaqil/Sheet-AI.git
+cd Sheet-AI
+
+# 2. Configure environment
+cp .env.example .env  # or edit .env directly with your keys
+
+# 3. Launch backend + Redis multi-service stack
+docker-compose up -d --build
+```
+- **Interactive Web Dashboard & REST API:** [http://localhost:8000](http://localhost:8000)
+- **Interactive Swagger Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Redis Service:** `localhost:6379` (backed by persistent named volume)
+
+---
+
+### Option B: Local Python Environment
+
+```bash
+# 1. Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Start FastAPI server
+uvicorn main:app --reload --port 8000
+
+# 4. (Optional) Launch Streamlit companion UI in a second terminal
+streamlit run app.py
+```
+
+### Required Configuration (`.env`)
+
+```env
+# LLM Provider
+GEMINI_API_KEY=your_gemini_api_key
+
+# Google Sheets Integration
+GOOGLE_SHEET_URL=https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit
+GCP_CREDENTIALS_JSON={"type": "service_account", ...}
+
+# Gateway Security & Session Storage
+SHEETSENSE_API_KEY=replace-with-a-random-secret
+REDIS_URL=redis://localhost:6379/0
+SQLITE_DB_PATH=sheetsense.db
+```
+
+---
+
+## 2. Key Capabilities
+
+- 💬 **Natural Language Querying:** Query, filter, and summarize complex spreadsheet data without writing SQL or formulas.
+- 🛡️ **Zero-Bypass Isolated Write Gateway:** The LLM reasoning agent is physically stripped of write capabilities. All mutations are quarantined to [sheets_writer.py](sheets_writer.py) and verified by static AST analysis in CI.
+- 🔐 **Human-in-the-Loop Confirmation Gate:** Destructive actions (`update_cell`, `delete_row`) generate an unconfirmed staging record with a cryptographic UUID4 and an enforced 5-minute TTL.
+- 🔍 **Schema RAG-Fusion:** Automatically extracts column semantics, performs 3-query expansion, and ranks schemas using TF-IDF and Reciprocal Rank Fusion ($k=60$).
+- 🛡️ **Zero-Eval AST & Formula Shield:** Completely eliminates Python `eval()` and `exec()`. Blocks formula injection prefixes (`=`, `+`, `-`, `@`, `\t`, `\r`) while preserving legitimate negative numbers.
+- 🧠 **Multi-Worker Redis Session Memory:** Production-grade distributed conversation memory with 24-hour rolling TTL, sliding 10-turn window, and automatic in-memory fallback.
+- 📊 **Real-time Observability & Evaluation:** Built-in metrics (`/metrics`) and an automated 30-task evaluation benchmark (`eval_harness.py`).
+
+---
+
+## 3. System Architecture
+
+SheetSense AI strictly isolates analytical reasoning from write execution:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                             Client Clients                               │
-│              (Streamlit UI / Webhooks / Third-party APIs)                │
+│                             Client Interfaces                            │
+│              (Embedded Dashboard / Streamlit UI / REST APIs)             │
 └────────────────────────────────────┬─────────────────────────────────────┘
                                      │ HTTP (X-API-Key)
 ┌────────────────────────────────────▼─────────────────────────────────────┐
@@ -67,41 +126,43 @@ All performance metrics below are empirically measured and verified via our auto
 
 ---
 
-## 3. Core Safety & Security Guardrails
+## 4. Safety & Security Guardrails
 
-### A. Isolated Write Gateway & Confirmation Gate
-- **Zero Direct Writes:** The LLM agent **never** possesses write access to Google Sheets. Calling `update_cell` or `delete_row` creates an unconfirmed record in SQLite `pending_actions` with a cryptographic UUID4 and a 5-minute time-to-live.
+### 1. Isolated Write Gateway & Confirmation Gate
+- **Zero Direct Writes:** The LLM agent **never** has direct write access to Google Sheets. Calling `update_cell` or `delete_row` stages an unconfirmed record in SQLite `pending_actions` with a UUID4 and 5-minute TTL.
 - **Physical Isolation:** Destructive operations are strictly quarantined in [sheets_writer.py](sheets_writer.py). Statically enforced by [scripts/check_write_isolation.py](scripts/check_write_isolation.py) and blocked in CI if any mutating call appears outside this gateway.
-- **Replay & Expiration Protection:** Confirming an expired action or re-executing an already confirmed action immediately returns HTTP `410 Gone`.
+- **Replay Protection:** Attempting to re-execute an already confirmed or expired action returns HTTP `410 Gone`.
 
-### B. Formula & Code Injection Guardrails
-- **Formula Injection Defense:** Reject spreadsheet formula injection prefixes (`=`, `+`, `-`, `@`, `\t`, `\r`, `%0A`) on text/formula values, while correctly distinguishing and accepting legitimate negative and positive numeric values (e.g. `-100`, `"-100"`, `-42.5`, `"-42.5"`).
-- **Zero-Eval AST Safe Execution:** Completely eliminated Python `eval()` and `exec()`. Aggregations execute either through native structured queries or via a strict AST evaluator that statically whitelists allowed node types, methods, and attributes, blocking all arbitrary code execution, imports, builtins, lambdas, and comprehensions.
+### 2. Formula & Code Injection Guardrails
+- **Formula Injection Defense:** Rejects spreadsheet formula injection prefixes (`=`, `+`, `-`, `@`, `\t`, `\r`, `%0A`) on text/formula values, while correctly permitting legitimate positive and negative numbers (e.g. `-100`, `"-100"`, `-42.5`).
+- **Zero-Eval AST Safe Execution:** Completely eliminates Python `eval()` and `exec()`. Math expressions execute via a strict AST evaluator that whitelists safe operators and blocks arbitrary code execution, imports, builtins, and comprehensions.
 
-### C. Credential Scrubbing & Audit Logging
-- **Regex Scrubbing:** Automatically scrubs Google API keys (`AIzaSy...`), OpenAI keys (`sk-...`), RSA private keys, and service account JSON keys from all SQLite `tool_calls` audit records.
-- **Traceability:** Every confirmed mutation and tool execution is logged with timestamp, latency, and session ID.
+### 3. Credential Scrubbing & Audit Logging
+- **Regex Scrubbing:** Automatically redacts Google API keys (`AIzaSy...`), OpenAI keys (`sk-...`), RSA private keys, and service account secrets from all `tool_calls` audit records.
+- **Traceability:** Every confirmed mutation and tool execution is recorded in SQLite with timestamp, execution latency, and session ID.
 
-### D. Rate Limiting & Resilience
-- **Sliding-Window Rate Limiting:** Enforces 60 req/min for `/chat` and 20 req/min for `/actions/{id}/confirm` with dynamic `Retry-After` headers.
-- **Client-Side Exponential Backoff:** Absorbs Google Gemini 429 quota spikes gracefully using exponential backoff with jitter.
+### 4. Rate Limiting & Resilience
+- **Sliding-Window Limiter:** Enforces 60 req/min for `/chat` and 20 req/min for `/actions/{id}/confirm` with dynamic `Retry-After` headers.
+- **Exponential Backoff:** Absorbs Gemini API 429 quota spikes gracefully using exponential backoff with randomized jitter.
 
 ---
 
-## 4. REST API Reference
+## 5. REST API Reference
 
-All requests require the `X-API-Key` header (example placeholder: `replace-with-a-random-secret`). Production deployments must use a strong, cryptographically generated secret stored securely in an environment variable or secrets manager.
+All requests accept the `X-API-Key` header configured in `.env`.
 
-### 1. `POST /chat`
-Execute a plain-English reasoning and data query turn.
+### 1. Execute Query (`POST /chat`)
+Submits a plain-English query or command to the agent.
 
-**Request:**
-```json
-{
-  "message": "What is the total revenue from completed orders?",
-  "session_id": "sess-user-42",
-  "sheet_name": "Orders"
-}
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: replace-with-a-random-secret" \
+  -d '{
+    "message": "What is the total revenue from completed orders?",
+    "session_id": "sess-user-42",
+    "sheet_name": "Orders"
+  }'
 ```
 
 **Response:**
@@ -116,11 +177,11 @@ Execute a plain-English reasoning and data query turn.
 
 ---
 
-### 2. Destructive Operations & Confirmation Flow
+### 2. Staged Mutation & Confirmation Flow
 
-When a user requests a cell update or row deletion, the agent stages the operation:
+When a user requests a cell modification or row deletion, the agent stages the operation:
 
-**Agent Response:**
+**Agent Response (Staged):**
 ```json
 {
   "answer": "⚠️ CONFIRMATION REQUIRED: A pending update has been staged with action_id: '550e8400-e29b-41d4-a716-446655440000'. Target: Orders where order_id='ORD-1002'. Call POST /actions/{action_id}/confirm to proceed.",
@@ -133,8 +194,11 @@ When a user requests a cell update or row deletion, the agent stages the operati
 }
 ```
 
-#### `POST /actions/{action_id}/confirm`
-Executes the staged mutation via the isolated gateway.
+#### Confirm Action (`POST /actions/{action_id}/confirm`)
+```bash
+curl -X POST http://localhost:8000/actions/550e8400-e29b-41d4-a716-446655440000/confirm \
+  -H "X-API-Key: replace-with-a-random-secret"
+```
 
 **Response:**
 ```json
@@ -147,13 +211,17 @@ Executes the staged mutation via the isolated gateway.
 }
 ```
 
-#### `POST /actions/{action_id}/reject`
+#### Reject Action (`POST /actions/{action_id}/reject`)
 Cancels the staged action and prevents execution.
 
 ---
 
-### 3. `GET /metrics`
-Retrieves live operational metrics:
+### 3. Observability & Operational Metrics (`GET /metrics`)
+```bash
+curl http://localhost:8000/metrics -H "X-API-Key: replace-with-a-random-secret"
+```
+
+**Response:**
 ```json
 {
   "tool_usage": {"read_sheet": 12, "filter_and_aggregate": 8},
@@ -165,87 +233,65 @@ Retrieves live operational metrics:
 
 ---
 
-### 4. `POST /eval/run`
-Triggers the full benchmark evaluation harness across 30 test cases and outputs real-time TSA, EA, CGA, and IBR metrics.
+### 4. Benchmark Runner (`POST /eval/run`)
+Executes the automated 30-task evaluation harness and outputs real-time TSA, EA, CGA, and IBR metrics.
 
 ---
 
-## 5. Quickstart & Deployment
+## 6. Web Dashboards
 
-### Local Development Setup
+SheetSense AI provides two frontend interfaces out of the box:
 
-1. **Clone repository and create virtual environment:**
-   ```bash
-   git clone https://github.com/FarhanAaqil/Sheet-AI.git
-   cd Sheet-AI
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-
-2. **Configure environment variables in `.env`:**
-   ```env
-   GEMINI_API_KEY=your_gemini_api_key
-   GOOGLE_SHEET_URL=https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit
-   GCP_CREDENTIALS_JSON={"type": "service_account", ...}
-   SHEETSENSE_API_KEY=replace-with-a-random-secret
-   REDIS_URL=redis://localhost:6379/0
-   SQLITE_DB_PATH=sheetsense.db
-   ```
-
-   > ⚠️ **Production Security Notice:** Never deploy with default or example secrets. Set `SHEETSENSE_API_KEY` to a cryptographically strong random secret (e.g. `openssl rand -hex 32`) stored securely in your environment or secrets manager.
-
-3. **Start FastAPI application:**
-   ```bash
-   uvicorn main:app --reload --port 8000
-   ```
-
-4. **Start Streamlit UI:**
-   ```bash
-   streamlit run app.py
-   ```
+1. **Embedded Desktop Dashboard (`GET /`):**
+   - Served directly by FastAPI at `http://localhost:8000`.
+   - Features real-time conversational chat, interactive sheet data grid, staged action confirmation dialogs, and live operational metrics.
+2. **Streamlit Companion UI (`app.py`):**
+   - Run via `streamlit run app.py` for rapid exploration and developer testing.
 
 ---
 
-### Production Deployment via Docker Compose
+## 7. Verified Benchmark Scorecard
 
-Deploy the complete multi-service stack (FastAPI backend + Redis 7 + persistent volumes) with a single command:
+Empirically measured across 30 benchmark tasks ([tests/eval_dataset.json](tests/eval_dataset.json)) using the evaluation harness ([eval_harness.py](eval_harness.py)):
+
+| Metric | Target | Verified Score | Verification Status |
+|---|---|---|---|
+| **Benchmark Routing Accuracy (BRA)** | $\ge 90.0\%$ | **100.0%** (30/30) | ✅ Exceeds Target |
+| **Execution Accuracy (EA)** | $\ge 85.0\%$ | **93.3%** (28/30) | ✅ Exceeds Target |
+| **Confirmation Gate Adherence (CGA)** | **100.0%** | **100.0%** (4/4 gated) | ✅ **0 direct writes permitted** |
+| **Injection Block Rate (IBR)** | **100.0%** | **100.0%** (4/4 blocked) | ✅ **0 exploits executed** |
+| **Median Latency ($p_{50}$)** | $< 3.0\,\text{s}$ | **~2.2 ms** (offline) | ✅ Optimal |
+| **95th Percentile Latency ($p_{95}$)** | $< 6.0\,\text{s}$ | **~7.0 ms** (offline) | ✅ Optimal |
+
+*Detailed category breakdowns and analysis are available in [docs/eval_report.md](docs/eval_report.md) and [docs/audit.md](docs/audit.md).*
+
+---
+
+## 8. Testing & Verification
+
+Run the complete test suite spanning unit tests, integration tests, and static security scans:
 
 ```bash
-docker-compose up -d --build
-```
-
-- **FastAPI Service:** `http://localhost:8000` (docs at `/docs`)
-- **Redis Service:** `localhost:6379` (backed by persistent named volume `redis_data`)
-- **SQLite Storage:** Persistent named volume `sqlite_data`
-
----
-
-## 6. Automated Testing & Verification
-
-Run the comprehensive test suite across all 84 unit, integration, and security tests:
-
-```bash
-# Run complete test suite (84 tests)
+# Run all 84 test cases
 pytest tests/ -v
 
-# Run static write-isolation guardrail scan
+# Run static AST write-isolation guardrail scanner
 python scripts/check_write_isolation.py
 
-# Run benchmark evaluation harness
+# Run end-to-end benchmark evaluation harness
 python eval_harness.py
 ```
 
 ---
 
-## 7. Repository Structure
+## 9. Repository Structure
 
 ```
 sheet-ai-agent/
-├── agent.py               # ReAct agent loop, Pydantic schemas, SheetTools
+├── agent.py               # LangChain ReAct agent loop, Pydantic schemas, SheetTools
 ├── database.py            # SQLite schema, pending_actions, audit logging, scrubber
-├── eval_harness.py        # Benchmark evaluation harness (TSA, EA, CGA, IBR)
-├── main.py                # FastAPI gateway, confirmation gate, rate limiting
+├── eval_harness.py        # Benchmark evaluation harness (BRA, EA, CGA, IBR)
+├── main.py                # FastAPI gateway, confirmation gate, rate limiting, metrics
 ├── rate_limiter.py        # Sliding-window rate limiter (Redis + memory fallback)
 ├── retrieval.py           # SchemaIndex, MultiQueryReformulator, RAGFusionRetriever
 ├── retry_handler.py       # Gemini exponential backoff & jitter resilience
@@ -253,6 +299,8 @@ sheet-ai-agent/
 ├── sheets_writer.py       # Isolated write gateway for Google Sheets mutations
 ├── scripts/
 │   └── check_write_isolation.py  # Static analysis AST/regex security scanner
+├── static/
+│   └── index.html         # Interactive web dashboard interface
 ├── tests/
 │   ├── eval_dataset.json               # 30 benchmark test cases
 │   ├── test_confirmation_gate.py      # Runtime confirmation gate & replay tests
@@ -271,11 +319,12 @@ sheet-ai-agent/
 │   └── eval_report.md     # Detailed evaluation metrics & latency report
 ├── docker-compose.yml     # Multi-container orchestration (FastAPI + Redis)
 ├── Dockerfile             # Multi-stage production container build
-└── requirements.txt       # Production dependencies
+├── requirements.txt       # Production dependencies
+└── LICENSE                # MIT License
 ```
 
 ---
 
-## 8. License
+## 10. License
 
-This project is licensed under the Apache 2.0 License.
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
