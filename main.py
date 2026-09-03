@@ -151,6 +151,10 @@ class HealthResponse(BaseModel):
     sheets_connected: bool
     sheets_count: int
 
+class ConnectSheetRequest(BaseModel):
+    sheet_url: str = Field(..., description="External Google Sheets URL", example="https://docs.google.com/spreadsheets/d/...")
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -229,6 +233,42 @@ def sheet_schema(
     if not schema:
         raise HTTPException(status_code=404, detail=f"Sheet '{sheet_name}' not found.")
     return schema
+
+
+@app.post("/sheets/connect", tags=["Agent"])
+def connect_sheet(
+    request: ConnectSheetRequest,
+    agent: SheetSenseAgent = Depends(get_agent),
+    _key: str = Depends(get_api_key),
+):
+    """Dynamically connects the agent to an external Google Sheet URL."""
+    try:
+        sheets = agent.connect_spreadsheet(request.sheet_url)
+        return {"status": "connected", "sheet_url": request.sheet_url, "sheets": sheets}
+    except Exception as e:
+        logger.error(f"Failed to connect external sheet: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to connect sheet: {str(e)}")
+
+
+@app.get("/sheets/{sheet_name}/data", tags=["Agent"])
+def get_sheet_data(
+    sheet_name: str,
+    limit: int = 150,
+    agent: SheetSenseAgent = Depends(get_agent),
+    _key: str = Depends(get_api_key),
+):
+    """Returns row records and columns for a worksheet."""
+    df = agent.sheet_tools._get_df(sheet_name)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"Sheet '{sheet_name}' not found.")
+    data = df.head(limit).fillna("").to_dict(orient="records")
+    return {
+        "sheet_name": sheet_name,
+        "total_rows": len(df),
+        "columns": list(df.columns),
+        "data": data,
+    }
+
 
 
 # ---------------------------------------------------------------------------

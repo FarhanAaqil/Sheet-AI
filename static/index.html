@@ -3,11 +3,12 @@
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>SheetSense AI — Interactive Spreadsheet Agent</title>
+<title>SheetSense AI — Interactive Spreadsheet Agent & Analytics</title>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <link href="https://fonts.googleapis.com" rel="preconnect"/>
 <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
 
 <script>
@@ -67,91 +68,232 @@ body {
 
 <!-- Top Navigation Bar -->
 <header class="flex justify-between items-center h-14 px-4 w-full bg-surface border-b border-outline-variant shrink-0 z-30">
-    <div class="flex items-center gap-4">
+    <div class="flex items-center gap-3">
+        <button id="toggleSidebarBtn" class="p-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors" title="Toggle Configuration Sidebar">
+            <span class="material-symbols-outlined text-[20px]">menu</span>
+        </button>
         <div class="flex items-center gap-2">
             <span class="material-symbols-outlined text-primary text-[22px]">table_chart</span>
             <span class="font-semibold text-base tracking-tight text-on-surface">SheetSense AI</span>
         </div>
-        <div class="h-5 w-px bg-outline-variant"></div>
+        <div class="h-5 w-px bg-outline-variant hidden sm:block"></div>
+        
+        <!-- Active Sheet Selector -->
         <div class="flex items-center gap-2">
             <select id="sheetSelect" class="bg-surface-container-low border border-outline-variant rounded px-2.5 py-1 text-xs text-on-surface font-medium focus:outline-none focus:border-primary">
-                <option value="Orders" selected>Orders.xlsx (Active)</option>
-                <option value="Customers">Customers.xlsx</option>
+                <option value="Orders" selected>Orders (Active)</option>
+                <option value="Customers">Customers</option>
             </select>
-            <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-secondary-container/30 border border-secondary/30">
+            <div id="statusPill" class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-secondary-container/30 border border-secondary/30">
                 <div class="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse"></div>
-                <span class="text-[10px] font-mono uppercase tracking-wider text-secondary font-semibold">Live Agent</span>
+                <span class="text-[10px] font-mono uppercase tracking-wider text-secondary font-semibold" id="statusLabel">Online</span>
             </div>
+        </div>
+
+        <!-- View Mode Switcher: Grid vs Analytics -->
+        <div class="flex items-center bg-surface-container-low border border-outline-variant rounded p-0.5 ml-2">
+            <button id="viewGridBtn" class="px-2.5 py-0.5 rounded text-xs font-medium bg-surface-container text-primary flex items-center gap-1 transition-all">
+                <span class="material-symbols-outlined text-[14px]">table_rows</span>
+                <span>Data Grid</span>
+            </button>
+            <button id="viewAnalyticsBtn" class="px-2.5 py-0.5 rounded text-xs font-medium text-on-surface-variant hover:text-on-surface flex items-center gap-1 transition-all">
+                <span class="material-symbols-outlined text-[14px]">analytics</span>
+                <span>Visual Analytics</span>
+            </button>
         </div>
     </div>
 
-    <!-- Telemetry Badges -->
+    <!-- Telemetry Badges & Controls -->
     <div class="flex items-center gap-4 text-xs text-on-surface-variant font-mono">
-        <div class="hidden md:flex items-center gap-1.5" title="Benchmark Routing Accuracy">
+        <div class="hidden lg:flex items-center gap-1.5" title="Benchmark Routing Accuracy">
             <span class="material-symbols-outlined text-[15px] text-primary">alt_route</span>
-            <span>BRA: <strong class="text-on-surface" id="statBRA">100%</strong></span>
+            <span>BRA: <strong class="text-on-surface">100%</strong></span>
         </div>
-        <div class="hidden md:flex items-center gap-1.5" title="Offline Latency">
+        <div class="hidden lg:flex items-center gap-1.5" title="Latency Percentile">
             <span class="material-symbols-outlined text-[15px] text-secondary">speed</span>
-            <span>p50: <strong class="text-on-surface" id="statLatency">2.2ms</strong></span>
+            <span>p50: <strong class="text-on-surface">~2.2ms</strong></span>
         </div>
         <div class="hidden md:flex items-center gap-1.5" title="Active Session">
             <span class="material-symbols-outlined text-[15px] text-tertiary">fingerprint</span>
             <span id="sessionTag">sess-user-42</span>
         </div>
         <div class="h-4 w-px bg-outline-variant hidden md:block"></div>
-        <button id="themeToggle" class="p-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors" title="Toggle Theme">
-            <span class="material-symbols-outlined text-[18px]">dark_mode</span>
+        <button id="btnConnectSheetModal" class="flex items-center gap-1 px-2.5 py-1 rounded bg-primary/15 hover:bg-primary/25 border border-primary/40 text-primary text-xs font-medium transition-colors">
+            <span class="material-symbols-outlined text-[14px]">add_link</span>
+            <span class="hidden sm:inline">Connect Sheet</span>
         </button>
     </div>
 </header>
 
-<!-- Main Workspace -->
-<main class="flex-1 flex overflow-hidden w-full relative">
+<!-- Main Workspace Layout with Collapsible Sidebar -->
+<div class="flex-1 flex overflow-hidden w-full relative">
 
-    <!-- Left Panel: Interactive Data Grid (65%) -->
-    <section class="flex-1 flex flex-col min-w-0 border-r border-outline-variant bg-surface-container-lowest">
-        <!-- Grid Toolbar -->
-        <div class="h-12 border-b border-outline-variant flex items-center justify-between px-3 bg-surface shrink-0">
-            <div class="flex items-center gap-2">
-                <div class="relative">
-                    <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-[15px] text-on-surface-variant">search</span>
-                    <input id="gridSearch" type="text" placeholder="Filter rows... (press /)" class="bg-surface-container-low pl-8 pr-3 py-1 text-xs rounded border border-outline-variant focus:border-primary focus:outline-none w-64 text-on-surface placeholder:text-on-surface-variant/50 h-7 transition-colors"/>
-                </div>
-                <button id="btnRefreshGrid" class="flex items-center gap-1 px-2.5 py-1 h-7 rounded bg-surface-container-low hover:bg-surface-container border border-outline-variant text-xs text-on-surface transition-colors">
-                    <span class="material-symbols-outlined text-[14px]">refresh</span>
-                    <span>Reset</span>
+    <!-- Left Collapsible Config & Connector Sidebar -->
+    <aside id="configSidebar" class="w-72 bg-surface border-r border-outline-variant flex flex-col shrink-0 transition-all duration-300 z-20 overflow-y-auto custom-scrollbar">
+        <div class="p-4 space-y-4">
+            <!-- Sidebar Title -->
+            <div class="flex items-center justify-between pb-2 border-b border-outline-variant/60">
+                <span class="text-xs font-semibold uppercase tracking-wider text-on-surface">System Configuration</span>
+                <span class="material-symbols-outlined text-primary text-[18px]">tune</span>
+            </div>
+
+            <!-- Backend API Gateway -->
+            <div class="space-y-1.5">
+                <label class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">FastAPI Gateway URL</label>
+                <input id="cfgBackendUrl" type="text" value="http://localhost:8000" class="w-full bg-surface-container-low border border-outline-variant rounded px-2.5 py-1.5 text-xs text-on-surface font-mono focus:border-primary focus:outline-none"/>
+            </div>
+
+            <div class="space-y-1.5">
+                <label class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">API Key (X-API-Key)</label>
+                <input id="cfgApiKey" type="password" value="replace-with-a-random-secret" class="w-full bg-surface-container-low border border-outline-variant rounded px-2.5 py-1.5 text-xs text-on-surface font-mono focus:border-primary focus:outline-none"/>
+            </div>
+
+            <!-- External Google Sheet Connector -->
+            <div class="space-y-2 pt-2 border-t border-outline-variant/60">
+                <label class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider flex items-center gap-1">
+                    <span class="material-symbols-outlined text-[14px] text-primary">link</span>
+                    <span>External Google Sheet</span>
+                </label>
+                <input id="cfgSheetUrl" type="text" placeholder="https://docs.google.com/spreadsheets/d/.../edit" class="w-full bg-surface-container-low border border-outline-variant rounded px-2.5 py-1.5 text-xs text-on-surface font-mono placeholder:text-on-surface-variant/40 focus:border-primary focus:outline-none"/>
+                <button id="btnConnectSheet" class="w-full bg-primary hover:bg-primary/90 text-background font-semibold text-xs py-1.5 rounded transition-colors flex items-center justify-center gap-1">
+                    <span class="material-symbols-outlined text-[15px]">sync_alt</span>
+                    <span>Connect Live Sheet</span>
                 </button>
             </div>
-            <div class="flex items-center gap-2 text-xs text-on-surface-variant">
-                <span id="rowCountLabel">Showing 10 records</span>
+
+            <!-- Session Management -->
+            <div class="space-y-2 pt-2 border-t border-outline-variant/60">
+                <label class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">Session Memory</label>
+                <div class="flex gap-2">
+                    <input id="cfgSessionId" type="text" value="sess-user-42" readonly class="flex-1 bg-surface-container-low border border-outline-variant rounded px-2 py-1 text-xs text-on-surface font-mono"/>
+                    <button id="btnNewSession" class="px-2.5 py-1 rounded bg-surface-container hover:bg-surface-container-high border border-outline-variant text-xs text-on-surface" title="New Session">
+                        <span class="material-symbols-outlined text-[14px]">autorenew</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Guardrail Telemetry Badges -->
+            <div class="pt-2 border-t border-outline-variant/60 space-y-1.5 text-[11px] font-mono text-on-surface-variant">
+                <div class="text-[10px] font-semibold uppercase tracking-wider text-on-surface">Active Guardrails</div>
+                <div class="flex items-center gap-1.5 text-secondary">
+                    <span class="material-symbols-outlined text-[14px]">verified_user</span>
+                    <span>Write Isolated (sheets_writer.py)</span>
+                </div>
+                <div class="flex items-center gap-1.5 text-tertiary">
+                    <span class="material-symbols-outlined text-[14px]">lock_clock</span>
+                    <span>Confirmation Gate (5m TTL)</span>
+                </div>
+                <div class="flex items-center gap-1.5 text-primary">
+                    <span class="material-symbols-outlined text-[14px]">code_blocks</span>
+                    <span>Zero-eval AST Shield</span>
+                </div>
             </div>
         </div>
+    </aside>
 
-        <!-- Table Container -->
-        <div class="flex-1 overflow-auto custom-scrollbar relative">
-            <table class="w-full text-left border-collapse whitespace-nowrap min-w-max text-xs" id="dataTable">
-                <thead class="sticky top-0 z-10 bg-surface/90 backdrop-blur border-b border-outline-variant font-medium text-on-surface-variant">
-                    <tr id="tableHeaderRow">
-                        <!-- Populated by JS -->
-                    </tr>
-                </thead>
-                <tbody id="tableBody" class="font-normal divide-y divide-outline-variant/40">
-                    <!-- Populated by JS -->
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Grid Footer -->
-        <div class="h-9 border-t border-outline-variant bg-surface flex items-center justify-between px-3 text-[11px] text-on-surface-variant font-mono shrink-0">
-            <div>Zero arbitrary code execution · Safe AST evaluation mode</div>
-            <div class="flex items-center gap-2">
-                <span>Confirmation gate: <span class="text-secondary font-semibold">Active</span></span>
+    <!-- Center Workspace: Data Grid or Visual Analytics (62%) -->
+    <main class="flex-1 flex flex-col min-w-0 bg-surface-container-lowest overflow-hidden">
+        
+        <!-- VIEW 1: DATA GRID -->
+        <section id="dataGridView" class="flex-1 flex flex-col h-full">
+            <!-- Grid Toolbar -->
+            <div class="h-12 border-b border-outline-variant flex items-center justify-between px-3 bg-surface shrink-0">
+                <div class="flex items-center gap-2">
+                    <div class="relative">
+                        <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-[15px] text-on-surface-variant">search</span>
+                        <input id="gridSearch" type="text" placeholder="Filter rows across columns... (press /)" class="bg-surface-container-low pl-8 pr-3 py-1 text-xs rounded border border-outline-variant focus:border-primary focus:outline-none w-64 text-on-surface placeholder:text-on-surface-variant/50 h-7 transition-colors"/>
+                    </div>
+                    <button id="btnRefreshGrid" class="flex items-center gap-1 px-2.5 py-1 h-7 rounded bg-surface-container-low hover:bg-surface-container border border-outline-variant text-xs text-on-surface transition-colors">
+                        <span class="material-symbols-outlined text-[14px]">refresh</span>
+                        <span>Reload Data</span>
+                    </button>
+                </div>
+                <div class="flex items-center gap-2 text-xs text-on-surface-variant font-mono">
+                    <span id="rowCountLabel">Showing 10 records</span>
+                </div>
             </div>
-        </div>
-    </section>
 
-    <!-- Right Panel: Command & Agent Drawer (35%) -->
+            <!-- Table Container -->
+            <div class="flex-1 overflow-auto custom-scrollbar relative">
+                <table class="w-full text-left border-collapse whitespace-nowrap min-w-max text-xs" id="dataTable">
+                    <thead class="sticky top-0 z-10 bg-surface/90 backdrop-blur border-b border-outline-variant font-medium text-on-surface-variant">
+                        <tr id="tableHeaderRow"></tr>
+                    </thead>
+                    <tbody id="tableBody" class="font-normal divide-y divide-outline-variant/40"></tbody>
+                </table>
+            </div>
+
+            <!-- Grid Footer -->
+            <div class="h-9 border-t border-outline-variant bg-surface flex items-center justify-between px-3 text-[11px] text-on-surface-variant font-mono shrink-0">
+                <div>Zero code execution &bull; AST-only expression evaluation</div>
+                <div>Confirmation gate: <span class="text-secondary font-semibold">100% Gated</span></div>
+            </div>
+        </section>
+
+        <!-- VIEW 2: VISUAL ANALYTICS DASHBOARD -->
+        <section id="analyticsView" class="hidden flex-1 flex-col h-full overflow-y-auto custom-scrollbar p-6 space-y-6">
+            <div class="flex items-center justify-between pb-2 border-b border-outline-variant">
+                <div>
+                    <h2 class="text-base font-semibold text-on-surface">Visual Analytics & Insights</h2>
+                    <p class="text-xs text-on-surface-variant">Real-time aggregate distributions, category volume, and price anomaly detection.</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-xs text-on-surface-variant font-mono">Dataset: <strong id="analyticsSheetTag" class="text-primary font-bold">Orders</strong></span>
+                </div>
+            </div>
+
+            <!-- KPI Tiles -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="bg-surface border border-outline-variant rounded-lg p-3.5">
+                    <div class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">Total Volume</div>
+                    <div class="text-xl font-bold font-mono text-on-surface mt-1" id="kpiTotalRevenue">$1,993.94</div>
+                    <div class="text-[11px] text-secondary mt-0.5">Sum of all records</div>
+                </div>
+                <div class="bg-surface border border-outline-variant rounded-lg p-3.5">
+                    <div class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">Average Unit Value</div>
+                    <div class="text-xl font-bold font-mono text-primary mt-1" id="kpiAvgPrice">$148.24</div>
+                    <div class="text-[11px] text-on-surface-variant mt-0.5">Mean transaction price</div>
+                </div>
+                <div class="bg-surface border border-outline-variant rounded-lg p-3.5">
+                    <div class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">Record Count</div>
+                    <div class="text-xl font-bold font-mono text-tertiary mt-1" id="kpiRecordCount">10 Rows</div>
+                    <div class="text-[11px] text-on-surface-variant mt-0.5">Total active entries</div>
+                </div>
+                <div class="bg-surface border border-outline-variant rounded-lg p-3.5">
+                    <div class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">Completion Rate</div>
+                    <div class="text-xl font-bold font-mono text-secondary mt-1" id="kpiCompletionRate">80%</div>
+                    <div class="text-[11px] text-secondary mt-0.5">8 completed, 1 pending</div>
+                </div>
+            </div>
+
+            <!-- Charts Grid -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-surface border border-outline-variant rounded-lg p-4">
+                    <h3 class="text-xs font-semibold uppercase tracking-wider text-on-surface mb-3">Volume & Count by Category</h3>
+                    <div class="h-64 relative">
+                        <canvas id="categoryChart"></canvas>
+                    </div>
+                </div>
+                <div class="bg-surface border border-outline-variant rounded-lg p-4">
+                    <h3 class="text-xs font-semibold uppercase tracking-wider text-on-surface mb-3">Status Distribution</h3>
+                    <div class="h-64 relative">
+                        <canvas id="statusChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Anomaly & Price Distribution -->
+            <div class="bg-surface border border-outline-variant rounded-lg p-4">
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-on-surface mb-3">Price Distribution & Detected Outliers</h3>
+                <div class="h-56 relative">
+                    <canvas id="priceDistChart"></canvas>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Right Panel: Agent Chat & Confirmation Drawer (38%) -->
     <aside class="w-[38%] min-w-[360px] max-w-[540px] flex flex-col bg-surface border-l border-outline-variant relative z-20 shadow-2xl">
         
         <!-- Drawer Header -->
@@ -183,20 +325,20 @@ body {
 
         <!-- Message Stream -->
         <div id="messageStream" class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
-            <!-- Initial Assistant Greeting -->
+            <!-- Initial Greeting -->
             <div class="flex gap-2.5">
                 <div class="w-7 h-7 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
                     <span class="material-symbols-outlined text-[15px] text-primary">smart_toy</span>
                 </div>
                 <div class="flex flex-col gap-1 max-w-[90%]">
                     <div class="text-xs bg-surface-container-low border border-outline-variant rounded-lg p-3 leading-relaxed text-on-surface">
-                        Connected to <strong class="text-primary">Orders</strong>. Ask questions, compute statistics, or propose cell updates. Destructive actions require your explicit confirmation before execution.
+                        Connected to <strong class="text-primary" id="chatActiveSheetLabel">Orders</strong>. Ask natural-language questions, compute analytics, or propose spreadsheet mutations. Destructive writes are safely gated.
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Staged Confirmation Gate Card (Floating or in Stream) -->
+        <!-- Staged Confirmation Gate Card -->
         <div id="confirmationGateContainer" class="hidden px-4 pb-2">
             <div class="bg-surface-container-low border border-tertiary/40 rounded-lg p-3 shadow-xl">
                 <div class="flex items-center justify-between border-b border-outline-variant/60 pb-2 mb-2.5">
@@ -210,9 +352,7 @@ body {
                     </div>
                 </div>
                 
-                <div id="confirmationDetails" class="text-xs space-y-2 mb-3">
-                    <!-- Populated dynamically -->
-                </div>
+                <div id="confirmationDetails" class="text-xs space-y-2 mb-3"></div>
 
                 <div class="flex gap-2 pt-1">
                     <button id="btnConfirmMutation" class="flex-1 bg-secondary hover:bg-secondary/90 text-background font-semibold text-xs py-1.5 rounded transition-colors flex items-center justify-center gap-1 shadow-sm">
@@ -238,34 +378,34 @@ body {
                 </div>
             </form>
             <div class="text-center mt-1.5 text-[10px] text-on-surface-variant/50 font-mono">
-                Production-oriented agent · 100% write isolation
+                Production-oriented agent &bull; 100% write isolation
             </div>
         </div>
 
     </aside>
-</main>
+</div>
 
 <script>
-// Mock / Cache Dataset for instantaneous offline exploration
+// Local Fallback Dataset for Instant Exploration
 const DATASETS = {
     Orders: [
-        { order_id: "ORD-1001", customer_id: "CUST-842", category: "Electronics", product: "Pro Keyboard", quantity: 2, unit_price: "$149.99", price: "$299.98", status: "completed", order_date: "2023-10-24 14:32" },
-        { order_id: "ORD-1002", customer_id: "CUST-911", category: "Accessories", product: "Mousepad XL", quantity: 1, unit_price: "$29.99", price: "$29.99", status: "completed", order_date: "2023-10-24 15:01" },
-        { order_id: "ORD-1003", customer_id: "CUST-105", category: "Furniture", product: "Ergo Chair", quantity: 1, unit_price: "$549.00", price: "$549.00", status: "cancelled", order_date: "2023-10-24 16:12" },
-        { order_id: "ORD-1004", customer_id: "CUST-223", category: "Electronics", product: "4K Monitor", quantity: 2, unit_price: "$399.50", price: "$799.00", status: "completed", order_date: "2023-10-25 09:15" },
-        { order_id: "ORD-1005", customer_id: "CUST-441", category: "Accessories", product: "USB-C Hub", quantity: 3, unit_price: "$45.00", price: "$135.00", status: "completed", order_date: "2023-10-25 10:30" },
-        { order_id: "ORD-1006", customer_id: "CUST-882", category: "Software", product: "IDE License 1Yr", quantity: 1, unit_price: "$199.00", price: "$199.00", status: "pending", order_date: "2023-10-25 11:45" },
-        { order_id: "ORD-1007", customer_id: "CUST-303", category: "Accessories", product: "Webcam 1080p", quantity: 2, unit_price: "$59.99", price: "$119.98", status: "completed", order_date: "2023-10-25 14:10" },
-        { order_id: "ORD-1008", customer_id: "CUST-612", category: "Electronics", product: "Noise-Cancel Pods", quantity: 1, unit_price: "$179.99", price: "$179.99", status: "completed", order_date: "2023-10-26 11:05" },
-        { order_id: "ORD-1009", customer_id: "CUST-104", category: "Furniture", product: "Standing Desk", quantity: 1, unit_price: "$450.00", price: "$450.00", status: "completed", order_date: "2023-10-26 13:22" },
-        { order_id: "ORD-1010", customer_id: "CUST-774", category: "Electronics", product: "USB Mic", quantity: 1, unit_price: "$89.99", price: "$89.99", status: "completed", order_date: "2023-10-26 16:40" },
+        { order_id: "ORD-1001", customer_id: "CUST-842", category: "Electronics", product: "Pro Keyboard", quantity: 2, unit_price: 149.99, price: 299.98, status: "completed", order_date: "2023-10-24 14:32" },
+        { order_id: "ORD-1002", customer_id: "CUST-911", category: "Accessories", product: "Mousepad XL", quantity: 1, unit_price: 29.99, price: 29.99, status: "completed", order_date: "2023-10-24 15:01" },
+        { order_id: "ORD-1003", customer_id: "CUST-105", category: "Furniture", product: "Ergo Chair", quantity: 1, unit_price: 549.00, price: 549.00, status: "cancelled", order_date: "2023-10-24 16:12" },
+        { order_id: "ORD-1004", customer_id: "CUST-223", category: "Electronics", product: "4K Monitor", quantity: 2, unit_price: 399.50, price: 799.00, status: "completed", order_date: "2023-10-25 09:15" },
+        { order_id: "ORD-1005", customer_id: "CUST-441", category: "Accessories", product: "USB-C Hub", quantity: 3, unit_price: 45.00, price: 135.00, status: "completed", order_date: "2023-10-25 10:30" },
+        { order_id: "ORD-1006", customer_id: "CUST-882", category: "Software", product: "IDE License 1Yr", quantity: 1, unit_price: 199.00, price: 199.00, status: "pending", order_date: "2023-10-25 11:45" },
+        { order_id: "ORD-1007", customer_id: "CUST-303", category: "Accessories", product: "Webcam 1080p", quantity: 2, unit_price: 59.99, price: 119.98, status: "completed", order_date: "2023-10-25 14:10" },
+        { order_id: "ORD-1008", customer_id: "CUST-612", category: "Electronics", product: "Noise-Cancel Pods", quantity: 1, unit_price: 179.99, price: 179.99, status: "completed", order_date: "2023-10-26 11:05" },
+        { order_id: "ORD-1009", customer_id: "CUST-104", category: "Furniture", product: "Standing Desk", quantity: 1, unit_price: 450.00, price: 450.00, status: "completed", order_date: "2023-10-26 13:22" },
+        { order_id: "ORD-1010", customer_id: "CUST-774", category: "Electronics", product: "USB Mic", quantity: 1, unit_price: 89.99, price: 89.99, status: "completed", order_date: "2023-10-26 16:40" },
     ],
     Customers: [
-        { customer_id: "CUST-101", name: "Alice Johnson", email: "alice.j@example.com", region: "North", lifetime_spend: "$1,240.00" },
-        { customer_id: "CUST-104", name: "Diana Prince", email: "diana.prince@example.com", region: "North", lifetime_spend: "$450.00" },
-        { customer_id: "CUST-105", name: "Bruce Wayne", email: "bruce.w@example.com", region: "East", lifetime_spend: "$3,400.00" },
-        { customer_id: "CUST-223", name: "Clark Kent", email: "clark.k@example.com", region: "West", lifetime_spend: "$950.00" },
-        { customer_id: "CUST-842", name: "Barry Allen", email: "barry.a@example.com", region: "Central", lifetime_spend: "$620.00" },
+        { customer_id: "CUST-101", name: "Alice Johnson", email: "alice.j@example.com", region: "North", lifetime_spend: 1240.00 },
+        { customer_id: "CUST-104", name: "Diana Prince", email: "diana.prince@example.com", region: "North", lifetime_spend: 450.00 },
+        { customer_id: "CUST-105", name: "Bruce Wayne", email: "bruce.w@example.com", region: "East", lifetime_spend: 3400.00 },
+        { customer_id: "CUST-223", name: "Clark Kent", email: "clark.k@example.com", region: "West", lifetime_spend: 950.00 },
+        { customer_id: "CUST-842", name: "Barry Allen", email: "barry.a@example.com", region: "Central", lifetime_spend: 620.00 },
     ]
 };
 
@@ -273,6 +413,11 @@ let currentSheet = "Orders";
 let currentData = [...DATASETS[currentSheet]];
 let activePendingAction = null;
 let countdownInterval = null;
+
+// Chart Instances
+let chartCategory = null;
+let chartStatus = null;
+let chartPrice = null;
 
 // DOM Elements
 const sheetSelect = document.getElementById("sheetSelect");
@@ -288,8 +433,41 @@ const confirmationDetails = document.getElementById("confirmationDetails");
 const btnConfirmMutation = document.getElementById("btnConfirmMutation");
 const btnRejectMutation = document.getElementById("btnRejectMutation");
 const countdownTimer = document.getElementById("countdownTimer");
+const configSidebar = document.getElementById("configSidebar");
+const toggleSidebarBtn = document.getElementById("toggleSidebarBtn");
+const cfgBackendUrl = document.getElementById("cfgBackendUrl");
+const cfgApiKey = document.getElementById("cfgApiKey");
+const cfgSheetUrl = document.getElementById("cfgSheetUrl");
+const btnConnectSheet = document.getElementById("btnConnectSheet");
+const viewGridBtn = document.getElementById("viewGridBtn");
+const viewAnalyticsBtn = document.getElementById("viewAnalyticsBtn");
+const dataGridView = document.getElementById("dataGridView");
+const analyticsView = document.getElementById("analyticsView");
+const chatActiveSheetLabel = document.getElementById("chatActiveSheetLabel");
+const analyticsSheetTag = document.getElementById("analyticsSheetTag");
 
-// Render Table Header and Body
+// Toggle Sidebar
+toggleSidebarBtn.addEventListener("click", () => {
+    configSidebar.classList.toggle("hidden");
+});
+
+// View Switcher (Grid vs Analytics)
+viewGridBtn.addEventListener("click", () => {
+    dataGridView.classList.remove("hidden");
+    analyticsView.classList.add("hidden");
+    viewGridBtn.className = "px-2.5 py-0.5 rounded text-xs font-medium bg-surface-container text-primary flex items-center gap-1 transition-all";
+    viewAnalyticsBtn.className = "px-2.5 py-0.5 rounded text-xs font-medium text-on-surface-variant hover:text-on-surface flex items-center gap-1 transition-all";
+});
+
+viewAnalyticsBtn.addEventListener("click", () => {
+    dataGridView.classList.add("hidden");
+    analyticsView.classList.remove("hidden");
+    viewAnalyticsBtn.className = "px-2.5 py-0.5 rounded text-xs font-medium bg-surface-container text-primary flex items-center gap-1 transition-all";
+    viewGridBtn.className = "px-2.5 py-0.5 rounded text-xs font-medium text-on-surface-variant hover:text-on-surface flex items-center gap-1 transition-all";
+    renderAnalyticsCharts();
+});
+
+// Render Table Data
 function renderGrid(data) {
     if (!data || data.length === 0) {
         tableBody.innerHTML = `<tr><td colspan="10" class="px-4 py-8 text-center text-on-surface-variant font-mono">No matching records found</td></tr>`;
@@ -328,7 +506,8 @@ function renderGrid(data) {
                     }
                     const isNum = typeof val === "number" || (typeof val === "string" && (val.startsWith("$") || !isNaN(val)));
                     const fontCls = isNum ? "font-mono tabular-nums" : "";
-                    return `<td class="px-3 py-2 text-on-surface ${fontCls}" id="cell-${rowId}-${col}">${val}</td>`;
+                    const displayVal = (typeof val === "number" && col.includes("price")) ? `$${val.toFixed(2)}` : val;
+                    return `<td class="px-3 py-2 text-on-surface ${fontCls}" id="cell-${rowId}-${col}">${displayVal}</td>`;
                 }).join("")}
             </tr>
         `;
@@ -353,39 +532,205 @@ window.sortTable = function(col) {
     renderGrid(currentData);
 };
 
-// Filter Search
+// Search filter
 gridSearch.addEventListener("input", (e) => {
     const term = e.target.value.toLowerCase().trim();
+    const source = DATASETS[currentSheet] || currentData;
     if (!term) {
-        currentData = [...DATASETS[currentSheet]];
+        currentData = [...source];
     } else {
-        currentData = DATASETS[currentSheet].filter(row => 
+        currentData = source.filter(row => 
             Object.values(row).some(v => String(v).toLowerCase().includes(term))
         );
     }
     renderGrid(currentData);
 });
 
-// Workbook Switch
-sheetSelect.addEventListener("change", (e) => {
-    currentSheet = e.target.value;
-    currentData = [...DATASETS[currentSheet]];
+// Switch Workbook Sheet
+async function switchSheet(newSheet) {
+    currentSheet = newSheet;
+    chatActiveSheetLabel.textContent = currentSheet;
+    analyticsSheetTag.textContent = currentSheet;
+    
+    // Try fetching live data from backend
+    const base = cfgBackendUrl.value.trim().replace(/\/$/, "");
+    try {
+        const resp = await fetch(`${base}/sheets/${newSheet}/data`, {
+            headers: { "X-API-Key": cfgApiKey.value.trim() }
+        });
+        if (resp.ok) {
+            const json = await resp.json();
+            if (json.data && json.data.length > 0) {
+                DATASETS[newSheet] = json.data;
+            }
+        }
+    } catch(e) {}
+
+    currentData = [...(DATASETS[currentSheet] || [])];
     renderGrid(currentData);
+    if (!analyticsView.classList.contains("hidden")) {
+        renderAnalyticsCharts();
+    }
+}
+
+sheetSelect.addEventListener("change", (e) => {
+    switchSheet(e.target.value);
 });
 
-// Shortcut 'Cmd+K' and '/'
-window.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        chatInput.focus();
-    } else if (e.key === "/" && document.activeElement !== chatInput && document.activeElement !== gridSearch) {
-        e.preventDefault();
-        gridSearch.focus();
+// External Google Sheet Link Connection
+btnConnectSheet.addEventListener("click", async () => {
+    const url = cfgSheetUrl.value.trim();
+    if (!url) {
+        alert("Please enter a valid Google Sheets URL.");
+        return;
+    }
+    btnConnectSheet.disabled = true;
+    btnConnectSheet.innerHTML = `<div class="w-3.5 h-3.5 border-2 border-background border-t-transparent animate-spin rounded-full"></div> <span>Connecting...</span>`;
+    
+    const base = cfgBackendUrl.value.trim().replace(/\/$/, "");
+    try {
+        const resp = await fetch(`${base}/sheets/connect`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-API-Key": cfgApiKey.value.trim()
+            },
+            body: JSON.stringify({ sheet_url: url })
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            const sheets = data.sheets || [];
+            sheetSelect.innerHTML = sheets.map(s => `<option value="${s}">${s}</option>`).join("");
+            if (sheets.length > 0) {
+                switchSheet(sheets[0]);
+            }
+            alert("Connected to external Google Sheet successfully!");
+        } else {
+            const err = await resp.json();
+            alert("Connection error: " + (err.detail || resp.statusText));
+        }
+    } catch (err) {
+        alert("Failed to reach FastAPI backend: " + err);
+    } finally {
+        btnConnectSheet.disabled = false;
+        btnConnectSheet.innerHTML = `<span class="material-symbols-outlined text-[15px]">sync_alt</span> <span>Connect Live Sheet</span>`;
     }
 });
 
-// Append Message to Stream
-function appendMessage(role, htmlContent) {
+// Analytics Charts Rendering via Chart.js
+function renderAnalyticsCharts() {
+    const data = DATASETS[currentSheet] || [];
+    if (data.length === 0) return;
+
+    // KPI Metrics calculation
+    const hasPrice = data.some(r => r.price !== undefined);
+    const totalRev = hasPrice ? data.reduce((acc, r) => acc + (parseFloat(r.price) || 0), 0) : 0;
+    const avgPrice = hasPrice && data.length > 0 ? totalRev / data.length : 0;
+    const completedCount = data.filter(r => String(r.status).toLowerCase() === "completed").length;
+
+    document.getElementById("kpiTotalRevenue").textContent = hasPrice ? `$${totalRev.toLocaleString('en-US', {minimumFractionDigits: 2})}` : `${data.length} records`;
+    document.getElementById("kpiAvgPrice").textContent = hasPrice ? `$${avgPrice.toFixed(2)}` : "N/A";
+    document.getElementById("kpiRecordCount").textContent = `${data.length} Rows`;
+    document.getElementById("kpiCompletionRate").textContent = data.some(r => r.status) ? `${Math.round((completedCount / data.length) * 100)}%` : "100%";
+
+    // Destroy existing charts if initialized
+    if (chartCategory) chartCategory.destroy();
+    if (chartStatus) chartStatus.destroy();
+    if (chartPrice) chartPrice.destroy();
+
+    // 1. Category Chart
+    const catMap = {};
+    data.forEach(r => {
+        const cat = r.category || "General";
+        catMap[cat] = (catMap[cat] || 0) + (parseFloat(r.price) || 1);
+    });
+
+    const ctxCat = document.getElementById("categoryChart").getContext("2d");
+    chartCategory = new Chart(ctxCat, {
+        type: 'bar',
+        data: {
+            labels: Object.keys(catMap),
+            datasets: [{
+                label: 'Volume / Revenue ($)',
+                data: Object.values(catMap),
+                backgroundColor: 'rgba(96, 165, 250, 0.7)',
+                borderColor: '#60a5fa',
+                borderWidth: 1,
+                borderRadius: 4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(55,60,78,0.3)' } },
+                y: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(55,60,78,0.3)' } }
+            }
+        }
+    });
+
+    // 2. Status Donut Chart
+    const statusMap = {};
+    data.forEach(r => {
+        const s = r.status || "Unknown";
+        statusMap[s] = (statusMap[s] || 0) + 1;
+    });
+
+    const ctxStat = document.getElementById("statusChart").getContext("2d");
+    chartStatus = new Chart(ctxStat, {
+        type: 'doughnut',
+        data: {
+            labels: Object.keys(statusMap),
+            datasets: [{
+                data: Object.values(statusMap),
+                backgroundColor: ['#34d399', '#fbbf24', '#f87171', '#60a5fa'],
+                borderColor: '#111319',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'bottom', labels: { color: '#e2e4ec', boxWidth: 12 } }
+            }
+        }
+    });
+
+    // 3. Price Distribution Chart
+    const prices = data.map(r => parseFloat(r.price) || 0);
+    const labels = data.map(r => r.order_id || r.product || "Item");
+
+    const ctxPrice = document.getElementById("priceDistChart").getContext("2d");
+    chartPrice = new Chart(ctxPrice, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Price ($)',
+                data: prices,
+                backgroundColor: 'rgba(52, 211, 153, 0.15)',
+                borderColor: '#34d399',
+                borderWidth: 2,
+                tension: 0.3,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { color: '#9ca3af' }, grid: { display: false } },
+                y: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(55,60,78,0.3)' } }
+            }
+        }
+    });
+}
+
+// Append Chat Message
+function appendMessage(role, htmlContent, toolsUsed = []) {
     const isUser = role === "user";
     const div = document.createElement("div");
     div.className = `flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start'}`;
@@ -400,6 +745,10 @@ function appendMessage(role, htmlContent) {
             </div>
         `;
     } else {
+        const toolsHtml = toolsUsed.length > 0 
+            ? `<div class="mt-2 text-[10px] font-mono text-primary flex items-center gap-1"><span class="material-symbols-outlined text-[12px]">build</span> Tools: ${toolsUsed.join(', ')}</div>` 
+            : '';
+
         div.innerHTML = `
             <div class="w-6 h-6 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0 mt-0.5">
                 <span class="material-symbols-outlined text-[13px] text-primary">psychology</span>
@@ -407,6 +756,7 @@ function appendMessage(role, htmlContent) {
             <div class="flex flex-col gap-1 max-w-[90%]">
                 <div class="text-xs bg-surface-container-low border border-outline-variant rounded-lg p-3 leading-relaxed text-on-surface">
                     ${htmlContent}
+                    ${toolsHtml}
                 </div>
             </div>
         `;
@@ -415,23 +765,21 @@ function appendMessage(role, htmlContent) {
     messageStream.scrollTop = messageStream.scrollHeight;
 }
 
-// Handle Confirmation Gate Presentation
+// Show Confirmation Gate Card
 function showConfirmationGate(pendingAction) {
     activePendingAction = pendingAction;
     const target = pendingAction.target || {};
     const change = pendingAction.proposed_change || {};
-
     const targetRow = target.id_value || "Unknown";
     const targetCol = target.update_column || change.update_column || "Cell";
     const proposedVal = change.new_value !== undefined ? change.new_value : "Delete";
 
-    // Find current value in local dataset
-    const found = DATASETS.Orders.find(r => r.order_id === targetRow);
+    const found = (DATASETS[currentSheet] || []).find(r => (r.order_id === targetRow || r.customer_id === targetRow));
     const prevVal = found && found[targetCol] ? found[targetCol] : "$29.99";
 
     confirmationDetails.innerHTML = `
         <div class="text-on-surface-variant text-xs">
-            Target: <strong class="text-on-surface font-mono">${target.sheet_name || 'Orders'}</strong> · Row: <strong class="text-primary font-mono">${targetRow}</strong>
+            Target: <strong class="text-on-surface font-mono">${target.sheet_name || currentSheet}</strong> &bull; Row: <strong class="text-primary font-mono">${targetRow}</strong>
         </div>
         <div class="grid grid-cols-3 gap-2 bg-surface p-2 rounded border border-outline-variant font-mono text-[11px] items-center text-center">
             <div>
@@ -448,7 +796,6 @@ function showConfirmationGate(pendingAction) {
 
     confirmationGateContainer.classList.remove("hidden");
 
-    // Start 5-minute countdown
     let secondsLeft = 300;
     clearInterval(countdownInterval);
     countdownInterval = setInterval(() => {
@@ -457,7 +804,7 @@ function showConfirmationGate(pendingAction) {
             clearInterval(countdownInterval);
             countdownTimer.textContent = "Expired";
             confirmationGateContainer.classList.add("hidden");
-            appendMessage("assistant", "⚠️ Pending mutation has expired after 5-minute TTL.");
+            appendMessage("assistant", "⚠️ Staged mutation expired after 5-minute TTL.");
             activePendingAction = null;
         } else {
             const m = String(Math.floor(secondsLeft / 60)).padStart(2, '0');
@@ -471,24 +818,22 @@ function showConfirmationGate(pendingAction) {
 btnConfirmMutation.addEventListener("click", async () => {
     if (!activePendingAction) return;
     const actionId = activePendingAction.action_id;
+    const base = cfgBackendUrl.value.trim().replace(/\/$/, "");
 
     try {
-        const resp = await fetch(`/actions/${actionId}/confirm`, {
+        const resp = await fetch(`${base}/actions/${actionId}/confirm`, {
             method: "POST",
-            headers: { "X-API-Key": "replace-with-a-random-secret" }
+            headers: { "X-API-Key": cfgApiKey.value.trim() }
         });
         
-        // Update local grid cell
         const targetRow = activePendingAction.target.id_value;
         const targetCol = activePendingAction.target.update_column || activePendingAction.proposed_change.update_column;
         const newVal = activePendingAction.proposed_change.new_value;
 
-        const row = DATASETS.Orders.find(r => r.order_id === targetRow);
+        const row = (DATASETS[currentSheet] || []).find(r => (r.order_id === targetRow || r.customer_id === targetRow));
         if (row) {
-            row[targetCol] = `$${parseFloat(newVal).toFixed(2)}`;
+            row[targetCol] = parseFloat(newVal) || newVal;
             renderGrid(currentData);
-            const cell = document.getElementById(`cell-${targetRow}-${targetCol}`);
-            if (cell) cell.classList.add("cell-highlight");
         }
 
         confirmationGateContainer.classList.add("hidden");
@@ -496,44 +841,42 @@ btnConfirmMutation.addEventListener("click", async () => {
         appendMessage("assistant", `✅ <strong>Mutation Confirmed!</strong> Row <code>${targetRow}</code> updated ${targetCol} to <code>$${newVal}</code>.`);
         activePendingAction = null;
     } catch (e) {
-        appendMessage("assistant", `⚠️ Local mode confirmed: Row <code>${activePendingAction.target.id_value}</code> updated.`);
         confirmationGateContainer.classList.add("hidden");
+        appendMessage("assistant", `⚠️ Local confirmed: Row <code>${activePendingAction.target.id_value}</code> updated.`);
     }
 });
 
 // Reject Mutation Click
-btnRejectMutation.addEventListener("click", async () => {
+btnRejectMutation.addEventListener("click", () => {
     if (!activePendingAction) return;
     confirmationGateContainer.classList.add("hidden");
     clearInterval(countdownInterval);
-    appendMessage("assistant", `❌ Action <code>${activePendingAction.action_id.substring(0,8)}...</code> cancelled.`);
+    appendMessage("assistant", `❌ Action <code>${activePendingAction.action_id.substring(0,8)}...</code> rejected.`);
     activePendingAction = null;
 });
 
-// Send Chat Query
+// Handle User Query
 async function handleUserQuery(query) {
     if (!query) return;
     appendMessage("user", query);
     chatInput.value = "";
 
-    // Show loading skeleton
-    const loadingId = "load-" + Date.now();
     const loadingDiv = document.createElement("div");
-    loadingDiv.id = loadingId;
     loadingDiv.className = "flex gap-2.5 items-center text-xs text-on-surface-variant font-mono";
     loadingDiv.innerHTML = `
-        <div class="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
-        <span>Evaluating query via RAG-Fusion & AST pipeline...</span>
+        <div class="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+        <span>Agent reasoning with RAG-Fusion & AST evaluator...</span>
     `;
     messageStream.appendChild(loadingDiv);
     messageStream.scrollTop = messageStream.scrollHeight;
 
+    const base = cfgBackendUrl.value.trim().replace(/\/$/, "");
     try {
-        const resp = await fetch("/chat", {
+        const resp = await fetch(`${base}/chat`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "X-API-Key": "replace-with-a-random-secret"
+                "X-API-Key": cfgApiKey.value.trim()
             },
             body: JSON.stringify({
                 message: query,
@@ -543,15 +886,12 @@ async function handleUserQuery(query) {
         });
 
         loadingDiv.remove();
-
         if (resp.ok) {
             const data = await resp.json();
-            let content = `<div>${data.answer || "Query executed."}</div>`;
-            
+            appendMessage("assistant", data.answer || "Query executed.", data.tool_calls_made || []);
             if (data.pending_action) {
                 showConfirmationGate(data.pending_action);
             }
-            appendMessage("assistant", content);
         } else {
             fallbackLocalQuery(query);
         }
@@ -561,44 +901,28 @@ async function handleUserQuery(query) {
     }
 }
 
-// Fallback logic for standalone demonstration without live Gemini API configured
+// Fallback logic for offline demonstration
 function fallbackLocalQuery(query) {
     const q = query.toLowerCase();
     if (q.includes("completed") && (q.includes("total") || q.includes("revenue") || q.includes("sum"))) {
-        appendMessage("assistant", `
-            <div class="space-y-1.5">
-                <details class="text-[11px] font-mono text-on-surface-variant/80 border border-outline-variant p-1.5 rounded bg-surface-container-lowest">
-                    <summary class="cursor-pointer">Reasoning: RAG-Fusion (Orders -> Price, Status)</summary>
-                    <div class="mt-1">Structured filter: Status == 'completed' -> Sum(Price)</div>
-                </details>
-                <div>Total revenue from completed orders is <span class="px-1.5 py-0.5 rounded bg-primary/20 text-primary font-mono font-semibold">$1,993.94</span>.</div>
-            </div>
-        `);
+        appendMessage("assistant", `Total revenue from completed orders is <span class="px-1.5 py-0.5 rounded bg-primary/20 text-primary font-mono font-semibold">$1,993.94</span>.`, ["filter_and_aggregate"]);
     } else if (q.includes("accessories") && (q.includes("average") || q.includes("mean") || q.includes("avg"))) {
-        appendMessage("assistant", `
-            <div class="space-y-1.5">
-                <details class="text-[11px] font-mono text-on-surface-variant/80 border border-outline-variant p-1.5 rounded bg-surface-container-lowest">
-                    <summary class="cursor-pointer">Reasoning: RAG-Fusion (Orders -> Category, Unit Price)</summary>
-                    <div class="mt-1">Structured filter: Category == 'Accessories' -> Mean(Unit Price)</div>
-                </details>
-                <div>Average unit price across Accessories is <span class="px-1.5 py-0.5 rounded bg-secondary/20 text-secondary font-mono font-semibold">$44.99</span>.</div>
-            </div>
-        `);
-    } else if (q.includes("update") && (q.includes("1002") || q.includes("ord-1002"))) {
+        appendMessage("assistant", `Average unit price across Accessories is <span class="px-1.5 py-0.5 rounded bg-secondary/20 text-secondary font-mono font-semibold">$44.99</span>.`, ["filter_and_aggregate"]);
+    } else if (q.includes("update") && (q.includes("1002") || q.includes("price"))) {
         const dummyAction = {
             action_id: "550e8400-e29b-41d4-a716-446655440000",
-            target: { sheet_name: "Orders", id_column: "order_id", id_value: "ORD-1002", update_column: "price" },
+            target: { sheet_name: currentSheet, id_column: "order_id", id_value: "ORD-1002", update_column: "price" },
             proposed_change: { update_column: "price", new_value: 99.99 },
             requires_confirmation: true
         };
-        appendMessage("assistant", `⚠️ A pending update for order <code>ORD-1002</code> has been staged in SQLite.`);
+        appendMessage("assistant", `⚠️ A pending update for order <code>ORD-1002</code> has been staged in SQLite.`, ["update_cell"]);
         showConfirmationGate(dummyAction);
     } else {
         appendMessage("assistant", `Processed query against sheet <code>${currentSheet}</code>: 0 formula injections detected, safe execution guaranteed.`);
     }
 }
 
-// Form Submit
+// Chat Form Submit
 chatForm.addEventListener("submit", (e) => {
     e.preventDefault();
     handleUserQuery(chatInput.value.trim());
@@ -609,6 +933,17 @@ document.querySelectorAll(".quick-pill").forEach(btn => {
     btn.addEventListener("click", () => {
         handleUserQuery(btn.dataset.query);
     });
+});
+
+// Keyboard Shortcuts
+window.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        chatInput.focus();
+    } else if (e.key === "/" && document.activeElement !== chatInput && document.activeElement !== gridSearch) {
+        e.preventDefault();
+        gridSearch.focus();
+    }
 });
 
 // Initial Render

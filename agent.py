@@ -962,3 +962,18 @@ class SheetSenseAgent:
             "columns": list(df.columns),
             "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
         }
+
+    def connect_spreadsheet(self, sheet_url: str) -> List[str]:
+        """Dynamically switch to an external Google Sheet URL and re-index tools."""
+        gc = _build_gspread_client()
+        self.spreadsheet = gc.open_by_url(sheet_url)
+        self.sheet_tools = SheetTools(self.spreadsheet)
+        self._lc_tools = self._build_tools()
+        self._agent = create_react_agent(
+            model=self.llm,
+            tools=self._lc_tools,
+            prompt=SYSTEM_PROMPT,
+        )
+        self._sync_schema_index()
+        return self.get_sheet_names()
+
