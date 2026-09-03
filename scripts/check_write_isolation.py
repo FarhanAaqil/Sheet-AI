@@ -64,6 +64,7 @@ def check_write_isolation():
         # Check 2: sheets_writer must only be imported by main.py
         if rel_path.name not in ("main.py", "sheets_writer.py"):
             for idx, line in enumerate(lines, 1):
+                stripped = line.strip()
                 if stripped.startswith("#"):
                     continue
                 if SHEETS_WRITER_IMPORT.search(line):

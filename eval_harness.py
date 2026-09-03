@@ -410,6 +410,13 @@ def run_evaluation() -> Dict[str, Any]:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    # Guarantee tables exist before running — this script is documented as
+    # the source of the published benchmark numbers in docs/eval_report.md,
+    # and previously relied on FastAPI's startup event having already run
+    # (e.g. from a prior `uvicorn main:app` invocation) to create the SQLite
+    # schema. On a genuinely fresh clone this silently produced CGA: 0.0%
+    # instead of the documented 100.0%, with only a buried log warning.
+    database.init_db()
     summary = run_evaluation()
     print("\n" + "=" * 60)
     print(" SheetSense AI — Offline Benchmark Evaluation Results")
