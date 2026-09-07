@@ -1,6 +1,4 @@
-# =============================================================================
 # SheetSense AI — Static Analysis Unit Test
-# =============================================================================
 
 from scripts.check_write_isolation import check_write_isolation
 

@@ -1,9 +1,6 @@
-# =============================================================================
 # SheetSense AI — Confirmation Gate Runtime Regression Tests
-# =============================================================================
 # Ensures that NO destructive action can reach Google Sheets write methods
 # without passing through POST /actions/{action_id}/confirm.
-# =============================================================================
 
 import os
 import uuid
@@ -19,9 +16,7 @@ from agent import SheetTools, SheetSenseAgent
 from main import app, get_agent
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def setup_test_db(tmp_path, monkeypatch):
     """Ensure tests run against a fresh isolated SQLite database."""
@@ -81,9 +76,7 @@ def client(mock_spreadsheet, monkeypatch):
     app.dependency_overrides.clear()
 
 
-# ---------------------------------------------------------------------------
 # Test Cases
-# ---------------------------------------------------------------------------
 
 def test_direct_tool_calls_never_reach_gspread_write_methods(mock_spreadsheet):
     """

@@ -1,9 +1,6 @@
-# =============================================================================
 # SheetSense AI — Schema Metadata Retrieval Layer (Architecture §5)
-# =============================================================================
 # Builds and maintains an in-memory index of all worksheet columns, inferred
 # dtypes, sample values, and semantic descriptions for RAG-Fusion retrieval.
-# =============================================================================
 
 import json
 import logging
@@ -14,9 +11,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
 # Multi-Query Reformulator (Architecture §5, PRD FR-6)
-# ---------------------------------------------------------------------------
 class MultiQueryReformulator:
     """
     Produces 3 distinct query reformulations for RAG-Fusion:
@@ -244,9 +239,7 @@ class SchemaIndex:
         return len(self.entries)
 
 
-# ---------------------------------------------------------------------------
 # RAG-Fusion Retriever (Architecture §5, PRD FR-6)
-# ---------------------------------------------------------------------------
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np

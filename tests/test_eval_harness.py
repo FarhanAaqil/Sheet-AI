@@ -1,6 +1,4 @@
-# =============================================================================
 # SheetSense AI — Evaluation Harness Unit Tests
-# =============================================================================
 
 import pytest
 from fastapi.testclient import TestClient

@@ -1,12 +1,9 @@
-# =============================================================================
 # SheetSense AI — Security Hardening & Resilience Tests (Day 5)
-# =============================================================================
 # Verifies:
 # 1. Sliding-window rate limiting with 429 and Retry-After header.
 # 2. Credential scrubbing preventing secret leakage into SQLite logs.
 # 3. Gemini API 429 exponential backoff with jitter.
 # 4. Global exception sanitization preventing stack trace leakage.
-# =============================================================================
 
 import time
 import pytest
@@ -24,9 +21,7 @@ def client():
     return TestClient(app)
 
 
-# ---------------------------------------------------------------------------
 # 1. Rate Limiter Tests
-# ---------------------------------------------------------------------------
 def test_sliding_window_rate_limiter_in_memory():
     """Verify rate limiter blocks after max_requests and provides Retry-After."""
     limiter = RateLimiter(redis_url="redis://localhost:6379/15")
@@ -72,9 +67,7 @@ def test_rate_limiter_endpoint_429(client, monkeypatch):
     assert "Retry-After" in resp.headers
 
 
-# ---------------------------------------------------------------------------
 # 2. Credential Scrubber Tests
-# ---------------------------------------------------------------------------
 def test_credential_scrubber_masks_sensitive_patterns():
     """Verify regex scrubber redacts Google keys, OpenAI keys, and service account keys."""
     raw_payload = {
@@ -116,9 +109,7 @@ def test_credential_scrubber_sqlite_audit_log():
     assert "[REDACTED_CREDENTIAL]" in row["output_json"]
 
 
-# ---------------------------------------------------------------------------
 # 3. Gemini Retry & Resilience Tests
-# ---------------------------------------------------------------------------
 def test_gemini_retry_backoff_on_429():
     """Verify retry handler catches 429 rate limits, sleeps with backoff, and succeeds."""
     mock_fn = MagicMock()
@@ -153,9 +144,7 @@ def test_gemini_retry_propagates_non_rate_limit_errors():
     assert mock_fn.call_count == 1
 
 
-# ---------------------------------------------------------------------------
 # 4. Global Sanitized Exception Handler Tests
-# ---------------------------------------------------------------------------
 def test_sanitized_global_exception_handler(client, monkeypatch):
     """Verify unhandled exceptions return 500 with error_id and no leaked stack traces."""
     def crash_endpoint():

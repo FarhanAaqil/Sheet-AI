@@ -1,10 +1,7 @@
-# =============================================================================
 # SheetSense AI — Tool Schema Validation & Injection Prevention Tests
-# =============================================================================
 # Verifies that Pydantic models reject formula injections, code injections,
 # and sandbox escape attempts before reaching any tool execution, while allowing
 # legitimate numeric values (such as negative numbers).
-# =============================================================================
 
 import json
 import pytest

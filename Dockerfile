@@ -18,8 +18,10 @@ WORKDIR /app
 
 COPY --from=builder /install /usr/local
 
-# Copy application source
+# Copy application source and web assets
 COPY *.py ./
+COPY static ./static
+COPY docs ./docs
 COPY credentials.json* ./
 
 RUN mkdir -p /app/cache /app/data

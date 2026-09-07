@@ -1,6 +1,4 @@
-# =============================================================================
 # SheetSense AI — Dedicated Google Sheets Writer Module
-# =============================================================================
 # THIS IS THE ONLY MODULE PERMITTED TO CALL GSPREAD WRITE METHODS.
 #
 # Architectural Guardrail:
@@ -8,7 +6,6 @@
 #   (POST /actions/{action_id}/confirm in main.py).
 # - It is strictly forbidden for agent.py, tool definitions, or any query path
 #   to import or call this module directly.
-# =============================================================================
 
 import logging
 from typing import Any, Dict, Optional

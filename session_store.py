@@ -1,10 +1,7 @@
-# =============================================================================
 # SheetSense AI — Multi-Turn Session Store (Architecture §1, §3)
-# =============================================================================
 # Manages multi-turn conversation memory with a 24-hour rolling TTL.
 # Backed by Redis to support multi-worker Uvicorn deployments without state loss.
 # Falls back to in-process memory ONLY when ENV=local_no_redis is explicitly set.
-# =============================================================================
 
 import os
 import json

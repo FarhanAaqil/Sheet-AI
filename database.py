@@ -1,9 +1,6 @@
-# =============================================================================
 # SheetSense AI — SQLite Database Layer
-# =============================================================================
 # Manages tool_calls audit log, pending_actions confirmation gate store,
 # and eval_runs history.
-# =============================================================================
 
 import os
 import re
@@ -70,9 +67,7 @@ def init_db(db_path: Optional[str] = None):
     logger.info(f"Database initialized at '{path}'.")
 
 
-# ---------------------------------------------------------------------------
 # Credential Scrubbing (Architecture §7)
-# ---------------------------------------------------------------------------
 SENSITIVE_PATTERNS = [
     re.compile(r"AIzaSy[A-Za-z0-9_\-]{33}"),                            # Google API key
     re.compile(r"sk-[a-zA-Z0-9\-_]{20,}"),                             # OpenAI API key
@@ -98,9 +93,7 @@ def scrub_credentials(text: Any) -> str:
     return text
 
 
-# ---------------------------------------------------------------------------
 # Tool Call Logging Helper
-# ---------------------------------------------------------------------------
 def log_tool_call(
     tool_name: str,
     input_data: Any,
@@ -136,9 +129,7 @@ def log_tool_call(
     return call_id
 
 
-# ---------------------------------------------------------------------------
 # Pending Actions Helper (Architecture §2, §6)
-# ---------------------------------------------------------------------------
 def create_pending_action(
     action_id: str,
     tool_name: str,
@@ -210,9 +201,7 @@ def update_action_status(action_id: str, status: str) -> bool:
     return updated
 
 
-# ---------------------------------------------------------------------------
 # Metrics Aggregation Helper (Architecture §2)
-# ---------------------------------------------------------------------------
 def get_metrics_summary() -> Dict[str, Any]:
     """Calculate aggregated metrics for the GET /metrics endpoint."""
     conn = get_db_connection()
@@ -265,9 +254,7 @@ def get_metrics_summary() -> Dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
 # Evaluation Run Logging (Architecture §6, PRD FR-8)
-# ---------------------------------------------------------------------------
 def log_eval_run(
     eval_id: str,
     total_queries: int,

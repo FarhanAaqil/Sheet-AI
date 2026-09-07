@@ -1,9 +1,6 @@
-# =============================================================================
 # SheetSense AI — Gemini API Retry & Resilience Handler (Architecture §4, PRD FR-9)
-# =============================================================================
 # Provides client-side exponential backoff with jitter on Gemini LLM calls to
 # gracefully handle free-tier 429 (ResourceExhausted) quota rate limit spikes.
-# =============================================================================
 
 import time
 import random

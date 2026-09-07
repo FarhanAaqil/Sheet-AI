@@ -1,6 +1,4 @@
-# =============================================================================
 # SheetSense AI — Next-Gen Interactive Streamlit Workspace
-# =============================================================================
 # Full-featured interactive AI dashboard with:
 #  • Dynamic FastAPI backend connection & health telemetry
 #  • External Google Sheet link connector & live worksheet switcher
@@ -9,7 +7,6 @@
 #  • Interactive spreadsheet data grid with instant search & filtering
 #  • Visual analytics dashboard with Plotly charts and custom studio
 #  • System telemetry, rate limit tracking, and evaluation harness runner
-# =============================================================================
 
 import os
 import time
@@ -26,9 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ---------------------------------------------------------------------------
 # Streamlit Page Configuration & Modern Theme Injection
-# ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="SheetSense AI — Production Spreadsheet Agent",
     page_icon="📊",
@@ -167,9 +162,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------------------------
 # Fallback / Offline Dataset Definition (Orders & Customers)
-# ---------------------------------------------------------------------------
 DEFAULT_DATASETS = {
     "Orders": pd.DataFrame([
         {"order_id": "ORD-1001", "customer_id": "CUST-842", "category": "Electronics", "product": "Pro Keyboard", "quantity": 2, "unit_price": 149.99, "price": 299.98, "status": "completed", "order_date": "2023-10-24 14:32"},
@@ -192,9 +185,7 @@ DEFAULT_DATASETS = {
     ])
 }
 
-# ---------------------------------------------------------------------------
 # Session State Initialization
-# ---------------------------------------------------------------------------
 if "session_id" not in st.session_state:
     st.session_state.session_id = f"sess-{uuid.uuid4().hex[:8]}"
 
@@ -226,9 +217,7 @@ if "api_key" not in st.session_state:
 if "cached_sheets_list" not in st.session_state:
     st.session_state.cached_sheets_list = list(DEFAULT_DATASETS.keys())
 
-# ---------------------------------------------------------------------------
 # Backend API Helper Functions
-# ---------------------------------------------------------------------------
 def check_backend_health(base_url: str, api_key: str) -> Dict[str, Any]:
     """Check if FastAPI gateway is accessible and measure latency."""
     headers = {"X-API-Key": api_key} if api_key else {}
@@ -387,9 +376,7 @@ def fallback_offline_chat(query: str, sheet_name: str) -> Dict[str, Any]:
             "pending_action": None
         }
 
-# ---------------------------------------------------------------------------
 # SIDEBAR: Backend Connectivity, Sheet Connector, & Controls
-# ---------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 📊 SheetSense AI")
     st.caption("Production-Grade Spreadsheet Intelligence Agent")
@@ -499,9 +486,7 @@ with st.sidebar:
     - ⚡ **Rate Limiting:** `60 req/min (Sliding Window)`
     """)
 
-# ---------------------------------------------------------------------------
 # MAIN AREA: Header & Top KPI Ribbon
-# ---------------------------------------------------------------------------
 active_df = st.session_state.sheet_data.get(st.session_state.active_sheet, pd.DataFrame())
 total_rows = len(active_df)
 metrics_data = get_backend_metrics(st.session_state.backend_url, st.session_state.api_key)
@@ -555,9 +540,7 @@ with kpi4:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------------------------
 # Core Navigation Tabs
-# ---------------------------------------------------------------------------
 tab_chat, tab_data, tab_analytics, tab_telemetry = st.tabs([
     "💬 Conversational Agent",
     "📋 Interactive Data Grid",
@@ -565,9 +548,7 @@ tab_chat, tab_data, tab_analytics, tab_telemetry = st.tabs([
     "⚙️ System Telemetry & Eval",
 ])
 
-# ---------------------------------------------------------------------------
 # TAB 1: Conversational Agent (Chat) & Human-in-the-Loop Confirmation Gate
-# ---------------------------------------------------------------------------
 with tab_chat:
     # Quick Action Prompt Suggestions
     st.markdown("**⚡ Quick Prompts:**")
@@ -716,9 +697,7 @@ with tab_chat:
                     st.session_state.pending_action = pending
                     st.rerun()
 
-# ---------------------------------------------------------------------------
 # TAB 2: Interactive Data Grid & Sheet Explorer
-# ---------------------------------------------------------------------------
 with tab_data:
     st.markdown(f"### 📋 Worksheet Data — `{st.session_state.active_sheet}`")
     
@@ -762,9 +741,7 @@ with tab_data:
         with dl_c2:
             st.caption(f"Memory footprint: ~{filtered_df.memory_usage(deep=True).sum() / 1024:.1f} KB &bull; Zero formula execution vulnerabilities")
 
-# ---------------------------------------------------------------------------
 # TAB 3: Visual Analytics & Insights (Plotly Charts + Custom Studio)
-# ---------------------------------------------------------------------------
 with tab_analytics:
     st.markdown(f"### 📈 Visual Analytics & Insights — `{st.session_state.active_sheet}`")
 
@@ -923,9 +900,7 @@ with tab_analytics:
             except Exception as e:
                 st.error(f"Error rendering chart: {e}")
 
-# ---------------------------------------------------------------------------
 # TAB 4: Telemetry, Observability & Evaluation Benchmark Runner
-# ---------------------------------------------------------------------------
 with tab_telemetry:
     st.markdown("### ⚙️ Operational Telemetry & Evaluation Scorecard")
     st.caption("Real-time audit telemetry, tool usage distribution, latency percentiles, and benchmark test verification.")

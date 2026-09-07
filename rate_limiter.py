@@ -1,12 +1,9 @@
-# =============================================================================
 # SheetSense AI — Rate Limiting Middleware (Architecture §7, PRD FR-9)
-# =============================================================================
 # Implements sliding-window rate limiting per API key:
 # - POST /chat: 60 requests/minute
 # - POST /actions/{action_id}/confirm: 20 requests/minute
 # Backed by Redis with in-memory fallback. Returns 429 Too Many Requests with
 # a Retry-After header when limits are exceeded.
-# =============================================================================
 
 import os
 import time

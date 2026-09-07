@@ -1,10 +1,7 @@
-# =============================================================================
 # SheetSense AI — Static Analysis & Write Isolation Enforcer
-# =============================================================================
 # Scans the entire codebase to statically guarantee:
 # 1. No gspread write/delete method is called outside sheets_writer.py.
 # 2. sheets_writer is NEVER imported outside main.py / confirm handler.
-# =============================================================================
 
 import os
 import re

@@ -1,10 +1,7 @@
-# =============================================================================
 # SheetSense AI — LangChain Agent Module
-# =============================================================================
 # Core agent with tool-calling and multi-step ReAct reasoning over
 # live Google Sheets data. Consumed by both FastAPI (main.py) and the
 # Streamlit UI (app.py).
-# =============================================================================
 
 import os
 import re
@@ -38,9 +35,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
 # Pydantic Tool Input Schemas & Injection Guardrails (Architecture §7)
-# ---------------------------------------------------------------------------
 FORBIDDEN_FORMULA_PREFIXES = ("=", "@", "\t", "\r", "%")
 FORBIDDEN_IDENTIFIER_CHARS = (";", "--", "/*", "*/", "<script", "javascript:")
 
@@ -77,9 +72,7 @@ def validate_no_formula_injection(value: Any, field_name: str) -> Any:
     return value
 
 
-# ---------------------------------------------------------------------------
 # Strict AST-Based Safe Evaluation & Execution Engine (Zero eval())
-# ---------------------------------------------------------------------------
 SAFE_PANDAS_METHODS = {
     "sum", "mean", "median", "std", "var", "min", "max", "count",
     "nunique", "value_counts", "describe", "head", "tail", "dropna",
@@ -415,9 +408,7 @@ class CrossSheetJoinInput(BaseModel):
         return validate_no_formula_injection(v, info.field_name)
 
 
-# ---------------------------------------------------------------------------
 # Google Sheets Client
-# ---------------------------------------------------------------------------
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -433,9 +424,7 @@ def _build_gspread_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 
-# ---------------------------------------------------------------------------
 # SheetSense Tool Definitions
-# ---------------------------------------------------------------------------
 class SheetTools:
     """
     All Google Sheets tools exposed to the LangChain agent.
@@ -474,19 +463,43 @@ class SheetTools:
         except Exception as e:
             logger.warning(f"Refresh failed for '{sheet_name}': {e}")
 
+    # ---- Argument Parser Helper ------------------------------------------
+
+    def _parse_args(self, input_val: Any = "", **kwargs) -> Dict[str, Any]:
+        """
+        Unified argument parser supporting:
+        1. Direct kwargs (from StructuredTool / LangGraph tool calls)
+        2. Dict objects
+        3. JSON strings (from tests, eval harness, or CLI)
+        """
+        params = dict(kwargs)
+        if isinstance(input_val, dict):
+            params.update(input_val)
+        elif isinstance(input_val, str) and input_val.strip():
+            try:
+                parsed = json.loads(input_val)
+                if isinstance(parsed, dict):
+                    params.update(parsed)
+            except Exception:
+                if "query" not in params:
+                    params["query"] = input_val
+        return params
+
     # ---- Tools -----------------------------------------------------------
 
-    def read_sheet(self, input_str: str) -> str:
+    def read_sheet(self, input_str: Any = "", **kwargs) -> str:
         """
         TOOL: read_sheet
-        Input: JSON string with keys 'sheet_name' (str) and optionally 'query'
+        Input: JSON string or kwargs with keys 'sheet_name' (str) and optionally 'query'
                (a plain-English description of what rows/columns you want).
         Reads data from a Google Sheet and returns it as a markdown table.
         Example input: {"sheet_name": "Sales", "query": "all rows where Region is North"}
         """
         try:
-            params = json.loads(input_str)
-            sheet_name = params["sheet_name"]
+            params = self._parse_args(input_str, **kwargs)
+            sheet_name = params.get("sheet_name")
+            if not sheet_name:
+                return "Error: 'sheet_name' is required."
             query = params.get("query", "all rows")
             df = self._get_df(sheet_name)
             if df is None or df.empty:
@@ -499,10 +512,10 @@ class SheetTools:
         except Exception as e:
             return f"Error reading sheet: {e}"
 
-    def filter_and_aggregate(self, input_str: str) -> str:
+    def filter_and_aggregate(self, input_str: Any = "", **kwargs) -> str:
         """
         TOOL: filter_and_aggregate
-        Input: JSON string with either:
+        Input: JSON string or kwargs with either:
           - Structured fields (preferred): 'sheet_name' (str), 'aggregation' (str: sum/mean/count/min/max/value_counts),
             optional 'column' (str), 'filter_column' (str), 'filter_operator' (str: ==/!=/>/>=/</<=/contains), 'filter_value' (any).
           - Or safe expression: 'sheet_name' (str), 'pandas_code' (str: safe expression on 'df').
@@ -511,7 +524,7 @@ class SheetTools:
         Example expression input: {"sheet_name": "Sales", "pandas_code": "df[df['Region']=='North']['Revenue'].sum()"}
         """
         try:
-            params = json.loads(input_str) if isinstance(input_str, str) else input_str
+            params = self._parse_args(input_str, **kwargs)
             sheet_name = params.get("sheet_name")
             if not sheet_name:
                 return "Error: 'sheet_name' is required."
@@ -547,10 +560,10 @@ class SheetTools:
         except Exception as e:
             return f"Error during aggregation: {e}"
 
-    def update_cell(self, input_str: str) -> str:
+    def update_cell(self, input_str: Any = "", **kwargs) -> str:
         """
         TOOL: update_cell
-        Input: JSON string with keys:
+        Input: JSON string or kwargs with keys:
           - 'sheet_name': worksheet name
           - 'id_column': column to search for the identifier (e.g. 'EmployeeID')
           - 'id_value': value to match in that column
@@ -562,7 +575,7 @@ class SheetTools:
                         "update_column": "Salary", "new_value": 75000}
         """
         try:
-            params = json.loads(input_str) if isinstance(input_str, str) else input_str
+            params = self._parse_args(input_str, **kwargs)
             sheet_name = params["sheet_name"]
             id_column = params["id_column"]
             id_value = params["id_value"]
@@ -599,10 +612,10 @@ class SheetTools:
         except Exception as e:
             return f"❌ Failed to stage update action: {e}"
 
-    def delete_row(self, input_str: str) -> str:
+    def delete_row(self, input_str: Any = "", **kwargs) -> str:
         """
         TOOL: delete_row
-        Input: JSON string with keys:
+        Input: JSON string or kwargs with keys:
           - 'sheet_name': worksheet name
           - 'id_column': column name used to locate the row
           - 'id_value': value to match for deletion
@@ -611,7 +624,7 @@ class SheetTools:
         Example input: {"sheet_name": "Orders", "id_column": "OrderID", "id_value": "ORD-991"}
         """
         try:
-            params = json.loads(input_str) if isinstance(input_str, str) else input_str
+            params = self._parse_args(input_str, **kwargs)
             sheet_name = params["sheet_name"]
             id_column = params["id_column"]
             id_value = params["id_value"]
@@ -643,16 +656,18 @@ class SheetTools:
         except Exception as e:
             return f"❌ Failed to stage delete action: {e}"
 
-    def summarize_sheet(self, input_str: str) -> str:
+    def summarize_sheet(self, input_str: Any = "", **kwargs) -> str:
         """
         TOOL: summarize_sheet
-        Input: JSON string with key 'sheet_name'.
+        Input: JSON string or kwargs with key 'sheet_name'.
         Returns descriptive statistics and data quality info for a worksheet.
         Example input: {"sheet_name": "Inventory"}
         """
         try:
-            params = json.loads(input_str)
-            sheet_name = params["sheet_name"]
+            params = self._parse_args(input_str, **kwargs)
+            sheet_name = params.get("sheet_name")
+            if not sheet_name:
+                return "Error: 'sheet_name' is required."
             df = self._get_df(sheet_name)
             if df is None or df.empty:
                 return f"Sheet '{sheet_name}' not found or empty."
@@ -666,7 +681,7 @@ class SheetTools:
         except Exception as e:
             return f"Error summarizing: {e}"
 
-    def list_sheets(self, _: str = "") -> str:
+    def list_sheets(self, _: Any = "", **kwargs) -> str:
         """
         TOOL: list_sheets
         No input required (pass empty string or "{}").
@@ -675,19 +690,23 @@ class SheetTools:
         names = [ws.title for ws in self.spreadsheet.worksheets()]
         return f"Available sheets: {', '.join(names)}"
 
-    def find_anomalies(self, input_str: str) -> str:
+    def find_anomalies(self, input_str: Any = "", **kwargs) -> str:
         """
         TOOL: find_anomalies
-        Input: JSON string with keys 'sheet_name' and 'column_name'.
+        Input: JSON string or kwargs with keys 'sheet_name' and 'column_name'.
         Detects outliers in a numeric column using the IQR method.
         Example input: {"sheet_name": "Sales", "column_name": "Revenue"}
         """
         try:
-            params = json.loads(input_str)
-            df = self._get_df(params["sheet_name"])
+            params = self._parse_args(input_str, **kwargs)
+            sheet_name = params.get("sheet_name")
+            column_name = params.get("column_name")
+            if not sheet_name or not column_name:
+                return "Error: 'sheet_name' and 'column_name' are required."
+            df = self._get_df(sheet_name)
             if df is None:
-                return f"Sheet '{params['sheet_name']}' not found."
-            col = df[params["column_name"]].apply(pd.to_numeric, errors="coerce").dropna()
+                return f"Sheet '{sheet_name}' not found."
+            col = df[column_name].apply(pd.to_numeric, errors="coerce").dropna()
             Q1, Q3 = col.quantile(0.25), col.quantile(0.75)
             IQR = Q3 - Q1
             lower, upper = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
@@ -698,28 +717,31 @@ class SheetTools:
         except Exception as e:
             return f"Error finding anomalies: {e}"
 
-    def cross_sheet_join(self, input_str: str) -> str:
+    def cross_sheet_join(self, input_str: Any = "", **kwargs) -> str:
         """
         TOOL: cross_sheet_join
-        Input: JSON string with keys 'sheet1', 'sheet2', 'on_column'.
+        Input: JSON string or kwargs with keys 'sheet1', 'sheet2', 'on_column'.
         Merges two worksheets on a common column and returns the joined table.
         Example input: {"sheet1": "Orders", "sheet2": "Customers", "on_column": "CustomerID"}
         """
         try:
-            params = json.loads(input_str)
-            df1 = self._get_df(params["sheet1"])
-            df2 = self._get_df(params["sheet2"])
+            params = self._parse_args(input_str, **kwargs)
+            sheet1 = params.get("sheet1")
+            sheet2 = params.get("sheet2")
+            on_column = params.get("on_column")
+            if not sheet1 or not sheet2 or not on_column:
+                return "Error: 'sheet1', 'sheet2', and 'on_column' are required."
+            df1 = self._get_df(sheet1)
+            df2 = self._get_df(sheet2)
             if df1 is None or df2 is None:
                 return "One or both sheets not found."
-            merged = pd.merge(df1, df2, on=params["on_column"])
+            merged = pd.merge(df1, df2, on=on_column)
             return f"Joined table ({len(merged)} rows):\n" + merged.head(30).to_markdown(index=False)
         except Exception as e:
             return f"Cross-sheet join error: {e}"
 
 
-# ---------------------------------------------------------------------------
 # SheetSense Agent — LangGraph ReAct Agent
-# ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
     "You are SheetSense AI, an expert data analyst agent that queries and updates "
     "live Google Sheets data using plain English. "
@@ -915,7 +937,19 @@ class SheetSenseAgent:
             # Extract the final AI response
 
             ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
-            answer = ai_messages[-1].content if ai_messages else "No answer produced."
+            raw_answer = ai_messages[-1].content if ai_messages else "No answer produced."
+            if isinstance(raw_answer, list):
+                text_parts = []
+                for part in raw_answer:
+                    if isinstance(part, dict) and "text" in part:
+                        text_parts.append(part["text"])
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                    else:
+                        text_parts.append(str(part))
+                answer = "\n".join(text_parts)
+            else:
+                answer = str(raw_answer)
 
             # Extract tool calls for observability
             tools_used = []

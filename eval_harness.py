@@ -1,6 +1,4 @@
-# =============================================================================
 # SheetSense AI — Offline Evaluation Harness (Architecture §6, PRD FR-8)
-# =============================================================================
 # Evaluates deterministic agent/tool performance across 30 benchmark tasks measuring:
 # - Benchmark Routing Accuracy (BRA)
 # - Execution Accuracy (EA)
@@ -10,7 +8,6 @@
 # NOTE: This harness evaluates offline deterministic routing against cached sheet
 # fixtures and does NOT measure live LLM latency unless a live agent is provided.
 # Persists all run metrics to SQLite for audit and regression tracking.
-# =============================================================================
 
 import os
 import json

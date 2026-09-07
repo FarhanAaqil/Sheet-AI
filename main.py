@@ -1,9 +1,6 @@
-# =============================================================================
 # SheetSense AI — FastAPI Model Deployment Layer
-# =============================================================================
 # Exposes the LangChain agent as a REST API with a single /chat endpoint.
 # Any frontend, Postman, or third-party workflow can integrate via HTTP.
-# =============================================================================
 
 import os
 import json
@@ -21,16 +18,12 @@ from dotenv import load_dotenv
 
 from agent import SheetSenseAgent  # Our LangChain agent module
 
-# ---------------------------------------------------------------------------
 # Bootstrap
-# ---------------------------------------------------------------------------
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
 # FastAPI App
-# ---------------------------------------------------------------------------
 app = FastAPI(
     title="SheetSense AI",
     description=(
@@ -49,9 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
 # Optional: API Key auth (set SHEETSENSE_API_KEY in .env to enable)
-# ---------------------------------------------------------------------------
 API_KEY_NAME = "X-API-Key"
 API_KEY = os.getenv("SHEETSENSE_API_KEY")  # None means auth is disabled
 
@@ -67,9 +58,7 @@ from rate_limiter import rate_limit
 from fastapi.responses import JSONResponse, HTMLResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-# ---------------------------------------------------------------------------
 # Global Exception Handlers (Architecture §7, PRD FR-9)
-# ---------------------------------------------------------------------------
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """Pass-through for standard HTTP exceptions with headers (e.g. 429 Retry-After)."""
@@ -99,9 +88,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         },
     )
 
-# ---------------------------------------------------------------------------
 # Singleton agent (loaded once at startup)
-# ---------------------------------------------------------------------------
 _agent: Optional[SheetSenseAgent] = None
 
 @app.on_event("startup")
@@ -123,9 +110,7 @@ def get_agent() -> SheetSenseAgent:
     return _agent
 
 
-# ---------------------------------------------------------------------------
 # Request / Response models
-# ---------------------------------------------------------------------------
 class ChatRequest(BaseModel):
     message: str = Field(..., example="What is the total revenue for Q1?")
     session_id: Optional[str] = Field(
@@ -155,9 +140,7 @@ class ConnectSheetRequest(BaseModel):
     sheet_url: str = Field(..., description="External Google Sheets URL", example="https://docs.google.com/spreadsheets/d/...")
 
 
-# ---------------------------------------------------------------------------
 # Endpoints
-# ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse, tags=["UI"])
 def root():
@@ -204,7 +187,7 @@ def chat(
         sheet_name=request.sheet_name,
     )
     return ChatResponse(
-        answer=result["answer"],
+        answer=str(result["answer"]),
         session_id=request.session_id,
         tool_calls_made=result.get("tools_used", []),
         raw_steps=result.get("intermediate_steps"),
@@ -271,9 +254,7 @@ def get_sheet_data(
 
 
 
-# ---------------------------------------------------------------------------
 # Confirmation Gate Endpoints (Architecture §2, §6)
-# ---------------------------------------------------------------------------
 import time
 from datetime import datetime, timezone
 import sheets_writer
@@ -420,18 +401,14 @@ def reject_action(
     return {"status": "rejected", "action_id": action_id}
 
 
-# ---------------------------------------------------------------------------
 # Observability & Metrics (Architecture §2, PRD FR-8)
-# ---------------------------------------------------------------------------
 @app.get("/metrics", tags=["Observability"])
 def metrics(_key: str = Depends(get_api_key)):
     """Returns tool usage counts, error rates, average latency, and action counts."""
     return database.get_metrics_summary()
 
 
-# ---------------------------------------------------------------------------
 # Evaluation Endpoints (Architecture §6, PRD FR-8)
-# ---------------------------------------------------------------------------
 import eval_harness
 
 

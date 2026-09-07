@@ -1,12 +1,9 @@
-# =============================================================================
 # SheetSense AI — End-to-End System Integration Tests (Day 6)
-# =============================================================================
 # Exercises the entire integrated system across:
 # 1. Health and operational metrics (/health, /metrics)
 # 2. ReAct chat endpoint with session tracking (/chat)
 # 3. Complete destructive staging, confirmation, and replay prevention lifecycle
 # 4. Automated evaluation suite endpoint (/eval/run)
-# =============================================================================
 
 import uuid
 import pytest

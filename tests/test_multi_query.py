@@ -1,6 +1,4 @@
-# =============================================================================
 # SheetSense AI — Multi-Query Reformulation Unit Tests
-# =============================================================================
 
 import pytest
 from unittest.mock import MagicMock

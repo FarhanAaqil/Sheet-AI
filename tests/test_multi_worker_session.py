@@ -1,9 +1,6 @@
-# =============================================================================
 # SheetSense AI — Multi-Worker Session Synchronization Test
-# =============================================================================
 # Verifies that two distinct worker/agent instances sharing a RedisSessionStore
 # correctly synchronize multi-turn conversation memory across workers.
-# =============================================================================
 
 import os
 import json
