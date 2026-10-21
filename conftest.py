@@ -1,6 +1,10 @@
 import sys
 import os
 
+os.environ['APP_ENV'] = 'test'
+os.environ['SHEETSENSE_API_KEY'] = 'dev-key-123'
+os.environ['ENV'] = 'local_no_redis'
+
 # Add project root to sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 

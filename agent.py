@@ -411,16 +411,22 @@ class CrossSheetJoinInput(BaseModel):
 # Google Sheets Client
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
 ]
 
 def _build_gspread_client() -> gspread.Client:
     """Build and return an authenticated gspread client."""
     creds_json_str = os.getenv("GCP_CREDENTIALS_JSON")
-    if not creds_json_str:
-        raise ValueError("GCP_CREDENTIALS_JSON environment variable not set.")
-    creds_info = json.loads(creds_json_str)
-    creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+    creds_path = os.getenv("GOOGLE_CREDS_PATH")
+    if creds_json_str:
+        creds_info = json.loads(creds_json_str)
+        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+    elif creds_path:
+        creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
+    else:
+        raise ValueError(
+            "Google credentials are not configured. Set GCP_CREDENTIALS_JSON "
+            "or GOOGLE_CREDS_PATH."
+        )
     return gspread.authorize(creds)
 
 
@@ -448,8 +454,11 @@ class SheetTools:
                 records = ws.get_all_records()
                 if records:
                     self._cache[ws.title] = pd.DataFrame(records)
-            except Exception as e:
-                logger.warning(f"Could not load sheet '{ws.title}': {e}")
+            except Exception as exc:
+                logger.warning(
+                    "Could not load worksheet: exception_type=%s",
+                    type(exc).__name__,
+                )
 
     def _get_df(self, sheet_name: str) -> Optional[pd.DataFrame]:
         return self._cache.get(sheet_name)
@@ -460,8 +469,8 @@ class SheetTools:
             ws = self.spreadsheet.worksheet(sheet_name)
             records = ws.get_all_records()
             self._cache[sheet_name] = pd.DataFrame(records) if records else pd.DataFrame()
-        except Exception as e:
-            logger.warning(f"Refresh failed for '{sheet_name}': {e}")
+        except Exception as exc:
+            logger.warning("Worksheet refresh failed: exception_type=%s", type(exc).__name__)
 
     # ---- Argument Parser Helper ------------------------------------------
 
@@ -557,8 +566,12 @@ class SheetTools:
             if isinstance(result, pd.Series):
                 return result.head(50).to_markdown()
             return str(result)
-        except Exception as e:
-            return f"Error during aggregation: {e}"
+        except ValueError as exc:
+            if str(exc).startswith("Unsafe code detected"):
+                return f"Error during aggregation: {exc}"
+            return "Error during aggregation: the requested operation could not be completed."
+        except Exception:
+            return "Error during aggregation: the requested operation could not be completed."
 
     def update_cell(self, input_str: Any = "", **kwargs) -> str:
         """
@@ -973,10 +986,18 @@ class SheetSenseAgent:
                 output["pending_action"] = self.sheet_tools.last_pending_action
 
             return output
-        except Exception as e:
-            logger.error(f"Agent execution error: {e}", exc_info=True)
+        except Exception as exc:
+            error_id = str(uuid.uuid4())[:8]
+            logger.error(
+                "Agent execution failed: error_id=%s exception_type=%s",
+                error_id,
+                type(exc).__name__,
+            )
             return {
-                "answer": f"I encountered an error processing your request: {e}",
+                "answer": (
+                    "I could not complete that request safely. "
+                    f"Reference: {error_id}."
+                ),
                 "tools_used": [],
                 "intermediate_steps": [],
             }
@@ -1010,4 +1031,3 @@ class SheetSenseAgent:
         )
         self._sync_schema_index()
         return self.get_sheet_names()
-

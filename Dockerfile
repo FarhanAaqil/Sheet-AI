@@ -1,5 +1,5 @@
 # ---------- Stage 1: Build ----------
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /install
@@ -12,7 +12,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ---------- Stage 2: Runtime ----------
-FROM python:3.11-slim
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    SQLITE_DB_PATH=/app/data/sheetsense.db
 
 WORKDIR /app
 
@@ -22,13 +26,20 @@ COPY --from=builder /install /usr/local
 COPY *.py ./
 COPY static ./static
 COPY docs ./docs
-COPY credentials.json* ./
 
-RUN mkdir -p /app/cache /app/data
+RUN addgroup --system sheetsense \
+    && adduser --system --ingroup sheetsense sheetsense \
+    && mkdir -p /app/cache /app/data \
+    && chown -R sheetsense:sheetsense /app/cache /app/data
+
+USER sheetsense
 
 
-# Expose both FastAPI and Streamlit ports
-EXPOSE 8000 8501
+# Expose the FastAPI gateway and bundled browser client
+EXPOSE 8000
 
-# Default: run FastAPI. Override with CMD ["streamlit","run","app.py",...] for UI.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+
+# Default: run FastAPI; the browser client is served from /static/index.html.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -9,12 +9,12 @@ import logging
 
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Security, Request
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import FastAPI, HTTPException, Depends, Request
 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from starlette.staticfiles import StaticFiles
 
 from agent import SheetSenseAgent  # Our LangChain agent module
 
@@ -22,6 +22,12 @@ from agent import SheetSenseAgent  # Our LangChain agent module
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
+
+from config import Settings
+from security import SecurityHeadersMiddleware, build_auth_dependencies
+
+settings = Settings.from_env()
+_authenticator, get_api_key, require_roles = build_auth_dependencies(settings)
 
 # FastAPI App
 app = FastAPI(
@@ -36,22 +42,13 @@ app = FastAPI(
 # Allow all origins for development (tighten in production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Optional: API Key auth (set SHEETSENSE_API_KEY in .env to enable)
-API_KEY_NAME = "X-API-Key"
-API_KEY = os.getenv("SHEETSENSE_API_KEY")  # None means auth is disabled
-
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-
-async def get_api_key(key: Optional[str] = Security(api_key_header)):
-    if API_KEY and key != API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid or missing API key.")
-    return key
+app.add_middleware(SecurityHeadersMiddleware)
+app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 import database
 from rate_limiter import rate_limit
@@ -77,8 +74,10 @@ async def global_exception_handler(request: Request, exc: Exception):
     """
     error_id = str(uuid.uuid4())[:8]
     logger.error(
-        f"[UnhandledException] error_id={error_id} path={request.url.path} error={exc}",
-        exc_info=True,
+        "[UnhandledException] error_id=%s path=%s exception_type=%s",
+        error_id,
+        request.url.path,
+        type(exc).__name__,
     )
     return JSONResponse(
         status_code=500,
@@ -94,6 +93,7 @@ _agent: Optional[SheetSenseAgent] = None
 @app.on_event("startup")
 async def startup_event():
     global _agent
+    settings.validate_startup()
     logger.info("Initializing SQLite database tables …")
     database.init_db()
     if _agent is None:
@@ -101,12 +101,17 @@ async def startup_event():
             logger.info("Initializing SheetSense AI Agent …")
             _agent = SheetSenseAgent()
             logger.info("Agent ready.")
-        except Exception as e:
-            logger.warning(f"Agent startup deferred or mocked: {e}")
+        except Exception as exc:
+            logger.warning("Agent startup failed: exception_type=%s", type(exc).__name__)
+            if settings.is_production:
+                raise
 
 def get_agent() -> SheetSenseAgent:
     if _agent is None:
-        raise HTTPException(status_code=503, detail="Agent not initialized yet.")
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "AGENT_UNAVAILABLE", "message": "The agent is not ready."},
+        )
     return _agent
 
 
@@ -151,9 +156,42 @@ def root():
             return f.read()
     return '{"message": "SheetSense AI is running. POST to /chat to query your spreadsheet."}'
 
+@app.get("/health/live", tags=["Meta"], include_in_schema=False)
+def liveness():
+    return {"status": "ok"}
+
+@app.get("/health/ready", tags=["Meta"])
+def readiness(
+    agent: SheetSenseAgent = Depends(get_agent),
+    _key=Depends(get_api_key),
+):
+    try:
+        sheet_names = agent.get_sheet_names()
+        store = getattr(agent, "session_store", None)
+        redis_client = getattr(store, "client", None)
+        if redis_client is not None:
+            redis_client.ping()
+        return {
+            "status": "ready",
+            "dependencies": {
+                "google_sheets": bool(sheet_names),
+                "session_store": type(store).__name__ if store else "unknown",
+            },
+        }
+    except Exception as exc:
+        logger.warning("Readiness check failed: exception_type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "SERVICE_NOT_READY", "message": "A required dependency is unavailable."},
+        ) from None
+
 
 @app.get("/health", response_model=HealthResponse, tags=["Meta"])
-def health(agent: SheetSenseAgent = Depends(get_agent), _key=Depends(get_api_key)):
+def health(
+    agent: SheetSenseAgent = Depends(get_agent),
+    _key=Depends(get_api_key),
+    _rate_limit=Depends(rate_limit(60, 60, "health")),
+):
     """Returns service health and Google Sheets connection status."""
     sheet_names = agent.get_sheet_names()
     return HealthResponse(
@@ -167,7 +205,7 @@ def health(agent: SheetSenseAgent = Depends(get_agent), _key=Depends(get_api_key
 def chat(
     request: ChatRequest,
     _rate_limit: bool = Depends(rate_limit(max_requests=60, window_seconds=60, endpoint_group="chat")),
-    _key: str = Depends(get_api_key),
+    _key=Depends(require_roles("viewer", "editor", "approver", "admin")),
     agent: SheetSenseAgent = Depends(get_agent),
 ):
     """
@@ -180,7 +218,11 @@ def chat(
 
     This single endpoint enables integration with any frontend or workflow.
     """
-    logger.info(f"[{request.session_id}] Query: {request.message}")
+    logger.info(
+        "Chat request received: session_present=%s message_length=%s",
+        bool(request.session_id),
+        len(request.message),
+    )
     result = agent.run(
         user_message=request.message,
         session_id=request.session_id,
@@ -199,7 +241,8 @@ def chat(
 @app.get("/sheets", tags=["Agent"])
 def list_sheets(
     agent: SheetSenseAgent = Depends(get_agent),
-    _key: str = Depends(get_api_key),
+    _key=Depends(require_roles("viewer", "editor", "approver", "admin")),
+    _rate_limit=Depends(rate_limit(60, 60, "sheets")),
 ):
     """Returns all worksheet names in the connected spreadsheet."""
     return {"sheets": agent.get_sheet_names()}
@@ -209,7 +252,8 @@ def list_sheets(
 def sheet_schema(
     sheet_name: str,
     agent: SheetSenseAgent = Depends(get_agent),
-    _key: str = Depends(get_api_key),
+    _key=Depends(require_roles("viewer", "editor", "approver", "admin")),
+    _rate_limit=Depends(rate_limit(60, 60, "sheets")),
 ):
     """Returns column names and row count for a specific worksheet."""
     schema = agent.get_sheet_schema(sheet_name)
@@ -222,15 +266,28 @@ def sheet_schema(
 def connect_sheet(
     request: ConnectSheetRequest,
     agent: SheetSenseAgent = Depends(get_agent),
-    _key: str = Depends(get_api_key),
+    _key=Depends(require_roles("admin")),
+    _rate_limit=Depends(rate_limit(10, 60, "connect")),
 ):
     """Dynamically connects the agent to an external Google Sheet URL."""
     try:
         sheets = agent.connect_spreadsheet(request.sheet_url)
         return {"status": "connected", "sheet_url": request.sheet_url, "sheets": sheets}
-    except Exception as e:
-        logger.error(f"Failed to connect external sheet: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Failed to connect sheet: {str(e)}")
+    except Exception as exc:
+        error_id = str(uuid.uuid4())[:8]
+        logger.error(
+            "Sheet connection failed: error_id=%s exception_type=%s",
+            error_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "SHEET_CONNECTION_FAILED",
+                "message": "The spreadsheet could not be connected.",
+                "error_id": error_id,
+            },
+        ) from None
 
 
 @app.get("/sheets/{sheet_name}/data", tags=["Agent"])
@@ -238,7 +295,8 @@ def get_sheet_data(
     sheet_name: str,
     limit: int = 150,
     agent: SheetSenseAgent = Depends(get_agent),
-    _key: str = Depends(get_api_key),
+    _key=Depends(require_roles("viewer", "editor", "approver", "admin")),
+    _rate_limit=Depends(rate_limit(60, 60, "sheets")),
 ):
     """Returns row records and columns for a worksheet."""
     df = agent.sheet_tools._get_df(sheet_name)
@@ -276,7 +334,7 @@ class ConfirmActionResponse(BaseModel):
 def confirm_action(
     action_id: str,
     _rate_limit: bool = Depends(rate_limit(max_requests=20, window_seconds=60, endpoint_group="confirm")),
-    _key: str = Depends(get_api_key),
+    _key=Depends(require_roles("approver", "admin")),
     agent: SheetSenseAgent = Depends(get_agent),
 ):
 
@@ -321,8 +379,8 @@ def confirm_action(
                 status_code=410,
                 detail=f"Action '{action_id}' has expired. Destructive actions must be confirmed within 5 minutes.",
             )
-    except ValueError as e:
-        logger.error(f"Error parsing expires_at timestamp '{expires_at_str}': {e}")
+    except ValueError:
+        logger.error("Invalid pending-action expiration timestamp: action_id=%s", action_id)
         raise HTTPException(
             status_code=400,
             detail=f"Invalid expiration timestamp on action '{action_id}'.",
@@ -366,27 +424,38 @@ def confirm_action(
             result=write_result,
             executed_at=datetime.now(timezone.utc).isoformat(),
         )
-    except Exception as e:
+    except Exception as exc:
         latency_ms = int((time.time() - start_time) * 1000)
+        error_id = str(uuid.uuid4())[:8]
         database.log_tool_call(
             tool_name=action.get("tool_name", "unknown"),
             input_data=action.get("target_json"),
-            output_data=str(e),
+            output_data={"error_id": error_id, "code": "WRITE_FAILED"},
             success=False,
             latency_ms=latency_ms,
             session_id=action.get("session_id"),
         )
-        logger.error(f"Failed to execute confirmed action '{action_id}': {e}", exc_info=True)
+        logger.error(
+            "Confirmed action failed: error_id=%s action_id=%s exception_type=%s",
+            error_id,
+            action_id,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Write execution failed: {str(e)}",
-        )
+            detail={
+                "code": "WRITE_FAILED",
+                "message": "The confirmed write could not be completed.",
+                "error_id": error_id,
+            },
+        ) from None
 
 
 @app.post("/actions/{action_id}/reject", tags=["Safety Guardrail"])
 def reject_action(
     action_id: str,
-    _key: str = Depends(get_api_key),
+    _key=Depends(require_roles("approver", "admin")),
+    _rate_limit=Depends(rate_limit(20, 60, "confirm")),
 ):
     """Cancel / reject a pending destructive action."""
     action = database.get_pending_action(action_id)
@@ -403,7 +472,10 @@ def reject_action(
 
 # Observability & Metrics (Architecture §2, PRD FR-8)
 @app.get("/metrics", tags=["Observability"])
-def metrics(_key: str = Depends(get_api_key)):
+def metrics(
+    _key=Depends(require_roles("admin")),
+    _rate_limit=Depends(rate_limit(60, 60, "metrics")),
+):
     """Returns tool usage counts, error rates, average latency, and action counts."""
     return database.get_metrics_summary()
 
@@ -413,7 +485,10 @@ import eval_harness
 
 
 @app.post("/eval/run", tags=["Evaluation"])
-def trigger_eval_run(_key: str = Depends(get_api_key)):
+def trigger_eval_run(
+    _key=Depends(require_roles("admin")),
+    _rate_limit=Depends(rate_limit(5, 60, "evaluation")),
+):
     """
     Triggers the benchmark evaluation harness across 30 test cases,
     computes TSA, EA, CGA, IBR, and latency percentiles, and logs the run to SQLite.
@@ -421,7 +496,18 @@ def trigger_eval_run(_key: str = Depends(get_api_key)):
     try:
         summary = eval_harness.run_evaluation()
         return summary
-    except Exception as e:
-        logger.error(f"Evaluation run failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Eval run failed: {e}")
-
+    except Exception as exc:
+        error_id = str(uuid.uuid4())[:8]
+        logger.error(
+            "Evaluation run failed: error_id=%s exception_type=%s",
+            error_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "EVALUATION_FAILED",
+                "message": "The evaluation could not be completed.",
+                "error_id": error_id,
+            },
+        ) from None

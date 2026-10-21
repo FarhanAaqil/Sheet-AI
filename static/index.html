@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html class="dark" lang="en">
+<html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
@@ -107,15 +107,15 @@ body {
     <div class="flex items-center gap-4 text-xs text-on-surface-variant font-mono">
         <div class="hidden lg:flex items-center gap-1.5" title="Benchmark Routing Accuracy">
             <span class="material-symbols-outlined text-[15px] text-primary">alt_route</span>
-            <span>BRA: <strong class="text-on-surface">100%</strong></span>
+            <span>Agent: <strong class="text-on-surface">Live</strong></span>
         </div>
         <div class="hidden lg:flex items-center gap-1.5" title="Latency Percentile">
             <span class="material-symbols-outlined text-[15px] text-secondary">speed</span>
-            <span>p50: <strong class="text-on-surface">~2.2ms</strong></span>
+            <span>Metrics: <strong class="text-on-surface">API</strong></span>
         </div>
         <div class="hidden md:flex items-center gap-1.5" title="Active Session">
             <span class="material-symbols-outlined text-[15px] text-tertiary">fingerprint</span>
-            <span id="sessionTag">sess-user-42</span>
+            <span id="sessionTag">Initializing</span>
         </div>
         <div class="h-4 w-px bg-outline-variant hidden md:block"></div>
         <button id="btnConnectSheetModal" class="flex items-center gap-1 px-2.5 py-1 rounded bg-primary/15 hover:bg-primary/25 border border-primary/40 text-primary text-xs font-medium transition-colors">
@@ -145,7 +145,7 @@ body {
 
             <div class="space-y-1.5">
                 <label class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">API Key (X-API-Key)</label>
-                <input id="cfgApiKey" type="password" value="replace-with-a-random-secret" class="w-full bg-surface-container-low border border-outline-variant rounded px-2.5 py-1.5 text-xs text-on-surface font-mono focus:border-primary focus:outline-none"/>
+                <input id="cfgApiKey" type="password" value="" autocomplete="off" class="w-full bg-surface-container-low border border-outline-variant rounded px-2.5 py-1.5 text-xs text-on-surface font-mono focus:border-primary focus:outline-none"/>
             </div>
 
             <!-- External Google Sheet Connector -->
@@ -165,7 +165,7 @@ body {
             <div class="space-y-2 pt-2 border-t border-outline-variant/60">
                 <label class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">Session Memory</label>
                 <div class="flex gap-2">
-                    <input id="cfgSessionId" type="text" value="sess-user-42" readonly class="flex-1 bg-surface-container-low border border-outline-variant rounded px-2 py-1 text-xs text-on-surface font-mono"/>
+                    <input id="cfgSessionId" type="text" value="" readonly class="flex-1 bg-surface-container-low border border-outline-variant rounded px-2 py-1 text-xs text-on-surface font-mono"/>
                     <button id="btnNewSession" class="px-2.5 py-1 rounded bg-surface-container hover:bg-surface-container-high border border-outline-variant text-xs text-on-surface" title="New Session">
                         <span class="material-symbols-outlined text-[14px]">autorenew</span>
                     </button>
@@ -414,6 +414,20 @@ let currentData = [...DATASETS[currentSheet]];
 let activePendingAction = null;
 let countdownInterval = null;
 
+function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+    })[character]);
+}
+
+function safeDomId(value) {
+    return String(value ?? "").replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
 // Chart Instances
 let chartCategory = null;
 let chartStatus = null;
@@ -445,6 +459,20 @@ const dataGridView = document.getElementById("dataGridView");
 const analyticsView = document.getElementById("analyticsView");
 const chatActiveSheetLabel = document.getElementById("chatActiveSheetLabel");
 const analyticsSheetTag = document.getElementById("analyticsSheetTag");
+const cfgSessionId = document.getElementById("cfgSessionId");
+const sessionTag = document.getElementById("sessionTag");
+const btnNewSession = document.getElementById("btnNewSession");
+let sessionId = `sess-${crypto.randomUUID()}`;
+cfgSessionId.value = sessionId;
+sessionTag.textContent = sessionId;
+
+btnNewSession.addEventListener("click", () => {
+    sessionId = `sess-${crypto.randomUUID()}`;
+    cfgSessionId.value = sessionId;
+    sessionTag.textContent = sessionId;
+    activePendingAction = null;
+    confirmationGateContainer.classList.add("hidden");
+});
 
 // Toggle Sidebar
 toggleSidebarBtn.addEventListener("click", () => {
@@ -479,20 +507,23 @@ function renderGrid(data) {
     
     // Header
     tableHeaderRow.innerHTML = columns.map(col => `
-        <th class="px-3 py-2 cursor-pointer hover:bg-surface-container select-none" onclick="sortTable('${col}')">
+        <th class="px-3 py-2 cursor-pointer hover:bg-surface-container select-none" data-column="${escapeHtml(col)}">
             <div class="flex items-center gap-1 uppercase tracking-wider font-mono text-[10px]">
-                <span>${col.replace('_', ' ')}</span>
+                <span>${escapeHtml(col.replace('_', ' '))}</span>
                 <span class="material-symbols-outlined text-[12px] opacity-40">unfold_more</span>
             </div>
         </th>
     `).join("");
+    tableHeaderRow.querySelectorAll("th[data-column]").forEach((heading) => {
+        heading.addEventListener("click", () => sortTable(heading.dataset.column));
+    });
 
     // Body
     tableBody.innerHTML = data.map((row, idx) => {
         const isZebra = idx % 2 === 1 ? 'bg-surface-container-low/50' : 'bg-transparent';
         const rowId = row.order_id || row.customer_id || `row-${idx}`;
         return `
-            <tr id="row-${rowId}" class="${isZebra} hover:bg-surface-container/60 transition-colors">
+            <tr id="row-${safeDomId(rowId)}" class="${isZebra} hover:bg-surface-container/60 transition-colors">
                 ${columns.map(col => {
                     const val = row[col];
                     if (col === "status") {
@@ -502,12 +533,12 @@ function renderGrid(data) {
                             cancelled: "bg-error/15 text-error border-error/30"
                         };
                         const cls = colorMap[val] || "bg-outline-variant/30 text-on-surface-variant";
-                        return `<td class="px-3 py-1.5"><span class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider border ${cls}">${val}</span></td>`;
+                        return `<td class="px-3 py-1.5"><span class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider border ${cls}">${escapeHtml(val)}</span></td>`;
                     }
                     const isNum = typeof val === "number" || (typeof val === "string" && (val.startsWith("$") || !isNaN(val)));
                     const fontCls = isNum ? "font-mono tabular-nums" : "";
                     const displayVal = (typeof val === "number" && col.includes("price")) ? `$${val.toFixed(2)}` : val;
-                    return `<td class="px-3 py-2 text-on-surface ${fontCls}" id="cell-${rowId}-${col}">${displayVal}</td>`;
+                    return `<td class="px-3 py-2 text-on-surface ${fontCls}" id="cell-${safeDomId(rowId)}-${safeDomId(col)}">${escapeHtml(displayVal)}</td>`;
                 }).join("")}
             </tr>
         `;
@@ -600,17 +631,22 @@ btnConnectSheet.addEventListener("click", async () => {
         if (resp.ok) {
             const data = await resp.json();
             const sheets = data.sheets || [];
-            sheetSelect.innerHTML = sheets.map(s => `<option value="${s}">${s}</option>`).join("");
+            sheetSelect.replaceChildren();
+            sheets.forEach((sheetName) => {
+                const option = document.createElement("option");
+                option.value = String(sheetName);
+                option.textContent = String(sheetName);
+                sheetSelect.appendChild(option);
+            });
             if (sheets.length > 0) {
                 switchSheet(sheets[0]);
             }
             alert("Connected to external Google Sheet successfully!");
         } else {
-            const err = await resp.json();
-            alert("Connection error: " + (err.detail || resp.statusText));
+            alert("The spreadsheet could not be connected.");
         }
     } catch (err) {
-        alert("Failed to reach FastAPI backend: " + err);
+        alert("The FastAPI backend is unavailable.");
     } finally {
         btnConnectSheet.disabled = false;
         btnConnectSheet.innerHTML = `<span class="material-symbols-outlined text-[15px]">sync_alt</span> <span>Connect Live Sheet</span>`;
@@ -732,13 +768,14 @@ function renderAnalyticsCharts() {
 // Append Chat Message
 function appendMessage(role, htmlContent, toolsUsed = []) {
     const isUser = role === "user";
+    const safeContent = escapeHtml(htmlContent).replace(/\n/g, "<br>");
     const div = document.createElement("div");
     div.className = `flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start'}`;
 
     if (isUser) {
         div.innerHTML = `
             <div class="text-xs bg-primary-container/40 border border-primary/30 rounded-lg p-2.5 max-w-[85%] text-on-surface leading-relaxed">
-                ${htmlContent}
+                ${safeContent}
             </div>
             <div class="w-6 h-6 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 border border-outline-variant">
                 <span class="material-symbols-outlined text-[13px] text-on-surface-variant">person</span>
@@ -746,7 +783,7 @@ function appendMessage(role, htmlContent, toolsUsed = []) {
         `;
     } else {
         const toolsHtml = toolsUsed.length > 0 
-            ? `<div class="mt-2 text-[10px] font-mono text-primary flex items-center gap-1"><span class="material-symbols-outlined text-[12px]">build</span> Tools: ${toolsUsed.join(', ')}</div>` 
+            ? `<div class="mt-2 text-[10px] font-mono text-primary flex items-center gap-1"><span class="material-symbols-outlined text-[12px]">build</span> Tools: ${escapeHtml(toolsUsed.join(', '))}</div>`
             : '';
 
         div.innerHTML = `
@@ -755,7 +792,7 @@ function appendMessage(role, htmlContent, toolsUsed = []) {
             </div>
             <div class="flex flex-col gap-1 max-w-[90%]">
                 <div class="text-xs bg-surface-container-low border border-outline-variant rounded-lg p-3 leading-relaxed text-on-surface">
-                    ${htmlContent}
+                    ${safeContent}
                     ${toolsHtml}
                 </div>
             </div>
@@ -779,17 +816,17 @@ function showConfirmationGate(pendingAction) {
 
     confirmationDetails.innerHTML = `
         <div class="text-on-surface-variant text-xs">
-            Target: <strong class="text-on-surface font-mono">${target.sheet_name || currentSheet}</strong> &bull; Row: <strong class="text-primary font-mono">${targetRow}</strong>
+            Target: <strong class="text-on-surface font-mono">${escapeHtml(target.sheet_name || currentSheet)}</strong> &bull; Row: <strong class="text-primary font-mono">${escapeHtml(targetRow)}</strong>
         </div>
         <div class="grid grid-cols-3 gap-2 bg-surface p-2 rounded border border-outline-variant font-mono text-[11px] items-center text-center">
             <div>
                 <span class="text-[10px] text-on-surface-variant block">Current</span>
-                <span class="line-through text-error">${prevVal}</span>
+                <span class="line-through text-error">${escapeHtml(prevVal)}</span>
             </div>
             <div class="text-on-surface-variant">➔</div>
             <div>
                 <span class="text-[10px] text-on-surface-variant block">Proposed</span>
-                <span class="text-secondary font-semibold">$${proposedVal}</span>
+                <span class="text-secondary font-semibold">${escapeHtml(proposedVal)}</span>
             </div>
         </div>
     `;
@@ -881,7 +918,7 @@ async function handleUserQuery(query) {
             body: JSON.stringify({
                 message: query,
                 sheet_name: currentSheet,
-                session_id: "sess-user-42"
+                session_id: sessionId
             })
         });
 
@@ -893,35 +930,15 @@ async function handleUserQuery(query) {
                 showConfirmationGate(data.pending_action);
             }
         } else {
-            fallbackLocalQuery(query);
+            appendMessage("assistant", `The backend rejected this request (HTTP ${resp.status}). No query or mutation was simulated.`);
         }
     } catch (err) {
         loadingDiv.remove();
-        fallbackLocalQuery(query);
+        appendMessage("assistant", "The backend is unavailable. No query or mutation was executed.");
     }
 }
 
 // Fallback logic for offline demonstration
-function fallbackLocalQuery(query) {
-    const q = query.toLowerCase();
-    if (q.includes("completed") && (q.includes("total") || q.includes("revenue") || q.includes("sum"))) {
-        appendMessage("assistant", `Total revenue from completed orders is <span class="px-1.5 py-0.5 rounded bg-primary/20 text-primary font-mono font-semibold">$1,993.94</span>.`, ["filter_and_aggregate"]);
-    } else if (q.includes("accessories") && (q.includes("average") || q.includes("mean") || q.includes("avg"))) {
-        appendMessage("assistant", `Average unit price across Accessories is <span class="px-1.5 py-0.5 rounded bg-secondary/20 text-secondary font-mono font-semibold">$44.99</span>.`, ["filter_and_aggregate"]);
-    } else if (q.includes("update") && (q.includes("1002") || q.includes("price"))) {
-        const dummyAction = {
-            action_id: "550e8400-e29b-41d4-a716-446655440000",
-            target: { sheet_name: currentSheet, id_column: "order_id", id_value: "ORD-1002", update_column: "price" },
-            proposed_change: { update_column: "price", new_value: 99.99 },
-            requires_confirmation: true
-        };
-        appendMessage("assistant", `⚠️ A pending update for order <code>ORD-1002</code> has been staged in SQLite.`, ["update_cell"]);
-        showConfirmationGate(dummyAction);
-    } else {
-        appendMessage("assistant", `Processed query against sheet <code>${currentSheet}</code>: 0 formula injections detected, safe execution guaranteed.`);
-    }
-}
-
 // Chat Form Submit
 chatForm.addEventListener("submit", (e) => {
     e.preventDefault();

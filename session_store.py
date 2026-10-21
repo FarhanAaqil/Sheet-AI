@@ -63,8 +63,11 @@ class RedisSessionStore(SessionStore):
             # Refresh rolling TTL on access
             self.client.expire(key, self.ttl_seconds)
             return messages[- (MAX_TURNS * 2):]
-        except Exception as e:
-            logger.error(f"Error deserializing session history for key '{key}': {e}")
+        except Exception as exc:
+            logger.error(
+                "Session history deserialization failed: exception_type=%s",
+                type(exc).__name__,
+            )
             return []
 
     def save_turn(self, session_id: Optional[str], human: str, ai: str) -> None:
@@ -119,6 +122,7 @@ def get_session_store() -> SessionStore:
     Factory creating the configured SessionStore instance.
     Defaults to RedisSessionStore. Falls back to InMemorySessionStore ONLY if ENV=local_no_redis.
     """
+    app_env = os.getenv("APP_ENV", os.getenv("ENV", "development")).lower()
     env = os.getenv("ENV", "").lower()
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
@@ -127,12 +131,14 @@ def get_session_store() -> SessionStore:
 
     try:
         return RedisSessionStore(redis_url=redis_url)
-    except Exception as e:
-        if env == "local_no_redis":
-            return InMemorySessionStore()
+    except Exception as exc:
+        if app_env in {"production", "staging"}:
+            raise RuntimeError(
+                "Redis is required for staging and production session storage."
+            ) from exc
         logger.warning(
-            f"Could not connect to Redis at '{redis_url}': {e}. "
-            "Falling back to InMemorySessionStore for local execution. "
+            "Could not connect to Redis; using local in-memory storage. "
+            f"exception_type={type(exc).__name__}. "
             "Set REDIS_URL or run redis container for multi-worker support."
         )
         return InMemorySessionStore()

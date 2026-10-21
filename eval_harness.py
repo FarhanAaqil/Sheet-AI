@@ -218,8 +218,11 @@ class EvaluationHarness:
                 guardrail_compliance_rate=round(cga_score * 100, 1),
             )
             logger.info(f"Evaluation run '{run_id}' logged to SQLite.")
-        except Exception as e:
-            logger.warning(f"Could not persist eval run to SQLite: {e}")
+        except Exception as exc:
+            logger.warning(
+                "Could not persist evaluation: exception_type=%s",
+                type(exc).__name__,
+            )
 
         return summary
 

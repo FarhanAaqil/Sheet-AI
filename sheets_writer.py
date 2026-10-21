@@ -77,11 +77,11 @@ def execute_update_cell(
             "new_value": new_value,
             "message": f"Updated '{update_column}' to '{new_value}' where {id_column}='{id_value}'.",
         }
-    except Exception as e:
-        logger.error(f"Sheets update failed: {e}", exc_info=True)
-        if isinstance(e, SheetsWriterError):
-            raise e
-        raise SheetsWriterError(f"Sheets update execution failed: {str(e)}") from e
+    except Exception as exc:
+        logger.error("Sheets update failed: exception_type=%s", type(exc).__name__)
+        if isinstance(exc, SheetsWriterError):
+            raise exc
+        raise SheetsWriterError("Sheets update execution failed.") from exc
 
 
 def execute_delete_row(
@@ -129,11 +129,11 @@ def execute_delete_row(
             "id_value": str(id_value),
             "message": f"Deleted row where {id_column}='{id_value}' from '{sheet_name}'.",
         }
-    except Exception as e:
-        logger.error(f"Sheets delete failed: {e}", exc_info=True)
-        if isinstance(e, SheetsWriterError):
-            raise e
-        raise SheetsWriterError(f"Sheets delete execution failed: {str(e)}") from e
+    except Exception as exc:
+        logger.error("Sheets delete failed: exception_type=%s", type(exc).__name__)
+        if isinstance(exc, SheetsWriterError):
+            raise exc
+        raise SheetsWriterError("Sheets delete execution failed.") from exc
 
 
 def execute_action(

@@ -12,6 +12,7 @@ import os
 import time
 import json
 import uuid
+import html
 from typing import Dict, Any, List, Optional
 
 import streamlit as st
@@ -212,7 +213,7 @@ if "backend_url" not in st.session_state:
     st.session_state.backend_url = os.getenv("FASTAPI_URL", "http://localhost:8000")
 
 if "api_key" not in st.session_state:
-    st.session_state.api_key = os.getenv("SHEETSENSE_API_KEY", "replace-with-a-random-secret")
+    st.session_state.api_key = os.getenv("SHEETSENSE_API_KEY", "")
 
 if "cached_sheets_list" not in st.session_state:
     st.session_state.cached_sheets_list = list(DEFAULT_DATASETS.keys())
@@ -229,8 +230,8 @@ def check_backend_health(base_url: str, api_key: str) -> Dict[str, Any]:
             data = resp.json()
             return {"online": True, "latency_ms": latency, "data": data}
         return {"online": False, "error": f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"online": False, "error": str(e)}
+    except Exception:
+        return {"online": False, "error": "Backend unavailable"}
 
 def fetch_sheet_names_from_backend(base_url: str, api_key: str) -> List[str]:
     """Retrieve available sheet names from /sheets."""
@@ -265,8 +266,8 @@ def connect_external_sheet(base_url: str, sheet_url: str, api_key: str) -> Dict[
             return {"success": True, "data": resp.json()}
         else:
             return {"success": False, "error": resp.json().get("detail", f"HTTP {resp.status_code}")}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except Exception:
+        return {"success": False, "error": "Could not reach the backend."}
 
 def send_chat_query(base_url: str, message: str, sheet_name: str, session_id: str, api_key: str) -> Dict[str, Any]:
     """Send user query to /chat."""
@@ -286,9 +287,13 @@ def send_chat_query(base_url: str, message: str, sheet_name: str, session_id: st
         else:
             detail = resp.json().get("detail", resp.text)
             return {"answer": f"⚠️ Server Error ({resp.status_code}): {detail}", "pending_action": None, "tools_used": []}
-    except Exception as e:
-        # Fallback offline reasoning if backend is not started
-        return fallback_offline_chat(message, sheet_name)
+    except Exception:
+        return {
+            "answer": "The backend is unavailable. No query was executed.",
+            "pending_action": None,
+            "tools_used": [],
+            "backend_unavailable": True,
+        }
 
 def confirm_pending_action(base_url: str, action_id: str, api_key: str) -> Dict[str, Any]:
     """Confirm a staged mutation via POST /actions/{id}/confirm."""
@@ -300,8 +305,8 @@ def confirm_pending_action(base_url: str, action_id: str, api_key: str) -> Dict[
         else:
             detail = resp.json().get("detail", f"HTTP {resp.status_code}")
             return {"success": False, "error": detail}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except Exception:
+        return {"success": False, "error": "Could not reach the backend."}
 
 def reject_pending_action(base_url: str, action_id: str, api_key: str) -> Dict[str, Any]:
     """Reject a staged mutation via POST /actions/{id}/reject."""
@@ -309,8 +314,8 @@ def reject_pending_action(base_url: str, action_id: str, api_key: str) -> Dict[s
     try:
         resp = requests.post(f"{base_url}/actions/{action_id}/reject", headers=headers, timeout=5.0)
         return {"success": resp.status_code == 200}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except Exception:
+        return {"success": False, "error": "Could not reach the backend."}
 
 def get_backend_metrics(base_url: str, api_key: str) -> Dict[str, Any]:
     """Fetch live operational metrics from /metrics."""
@@ -322,59 +327,12 @@ def get_backend_metrics(base_url: str, api_key: str) -> Dict[str, Any]:
     except Exception:
         pass
     return {
-        "tool_usage": {"read_sheet": 18, "filter_and_aggregate": 14, "update_cell": 4},
-        "error_rate": {"read_sheet": 0.0, "filter_and_aggregate": 0.0, "update_cell": 0.0},
-        "avg_latency_ms": {"read_sheet": 38, "filter_and_aggregate": 92, "update_cell": 145},
-        "actions": {"pending": 0, "confirmed": 4, "expired": 0, "rejected": 1}
+        "available": False,
+        "tool_usage": {},
+        "error_rate": {},
+        "avg_latency_ms": {},
+        "actions": {},
     }
-
-def fallback_offline_chat(query: str, sheet_name: str) -> Dict[str, Any]:
-    """Offline interactive reasoning fallback if FastAPI backend is not yet started."""
-    q = query.lower()
-    df = st.session_state.sheet_data.get(sheet_name, pd.DataFrame())
-    
-    if "completed" in q and ("total" in q or "revenue" in q or "sum" in q):
-        if not df.empty and "price" in df.columns and "status" in df.columns:
-            tot = df[df["status"] == "completed"]["price"].sum()
-            return {
-                "answer": f"The total revenue from completed orders in **{sheet_name}** is **${tot:,.2f}**.",
-                "tools_used": ["filter_and_aggregate"],
-                "intermediate_steps": [{"tool": "filter_and_aggregate", "observation": f"status=='completed' sum(price) = ${tot:,.2f}"}],
-                "pending_action": None
-            }
-        return {"answer": "Total revenue from completed orders is **$1,993.94**.", "tools_used": ["filter_and_aggregate"], "pending_action": None}
-    
-    elif "accessories" in q and ("average" in q or "unit price" in q or "avg" in q or "mean" in q):
-        if not df.empty and "category" in df.columns and "unit_price" in df.columns:
-            avg_p = df[df["category"] == "Accessories"]["unit_price"].mean()
-            return {
-                "answer": f"The average unit price for **Accessories** is **${avg_p:.2f}**.",
-                "tools_used": ["filter_and_aggregate"],
-                "intermediate_steps": [{"tool": "filter_and_aggregate", "observation": f"category=='Accessories' mean(unit_price) = ${avg_p:.2f}"}],
-                "pending_action": None
-            }
-        return {"answer": "The average unit price across Accessories is **$44.99**.", "tools_used": ["filter_and_aggregate"], "pending_action": None}
-
-    elif "update" in q and ("1002" in q or "price" in q):
-        action_id = str(uuid.uuid4())
-        return {
-            "answer": f"⚠️ **CONFIRMATION REQUIRED**: An update mutation has been staged for order `ORD-1002` setting price to `99.99`. Please confirm or reject below.",
-            "tools_used": ["update_cell"],
-            "intermediate_steps": [{"tool": "update_cell", "observation": "Staged unconfirmed record with 5-min TTL"}],
-            "pending_action": {
-                "action_id": action_id,
-                "tool_name": "update_cell",
-                "target": {"sheet_name": sheet_name, "id_column": "order_id", "id_value": "ORD-1002"},
-                "proposed_change": {"update_column": "price", "new_value": 99.99},
-            }
-        }
-    else:
-        return {
-            "answer": f"I processed your query against **{sheet_name}** using safe AST evaluation. Zero formula injections were detected.",
-            "tools_used": ["read_sheet"],
-            "intermediate_steps": [{"tool": "read_sheet", "observation": f"Read {len(df)} rows from {sheet_name}"}],
-            "pending_action": None
-        }
 
 # SIDEBAR: Backend Connectivity, Sheet Connector, & Controls
 with st.sidebar:
@@ -396,8 +354,8 @@ with st.sidebar:
         lat = health_info["latency_ms"]
         st.markdown(f'<div class="status-pill status-online">🟢 Gateway Online ({lat}ms)</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div class="status-pill status-offline">🟡 Offline (Local Engine Mode)</div>', unsafe_allow_html=True)
-        st.caption("Start FastAPI (`uvicorn main:app --reload --port 8000`) for full agent live features.")
+        st.markdown('<div class="status-pill status-offline">Backend unavailable</div>', unsafe_allow_html=True)
+        st.caption("No queries or mutations will be simulated. Start FastAPI and retry.")
 
     st.markdown("---")
 
@@ -490,6 +448,7 @@ with st.sidebar:
 active_df = st.session_state.sheet_data.get(st.session_state.active_sheet, pd.DataFrame())
 total_rows = len(active_df)
 metrics_data = get_backend_metrics(st.session_state.backend_url, st.session_state.api_key)
+active_sheet_html = html.escape(str(st.session_state.active_sheet))
 
 col_h1, col_h2 = st.columns([3, 1])
 with col_h1:
@@ -506,12 +465,12 @@ with kpi1:
     <div class="metric-card">
         <div class="metric-label">Active Sheet Rows</div>
         <div class="metric-value">{total_rows}</div>
-        <div class="metric-sub">Worksheet: {st.session_state.active_sheet}</div>
+        <div class="metric-sub">Worksheet: {active_sheet_html}</div>
     </div>
     """, unsafe_allow_html=True)
 
 with kpi2:
-    conf_count = metrics_data.get("actions", {}).get("confirmed", 4)
+    conf_count = metrics_data.get("actions", {}).get("confirmed", 0)
     st.markdown(f"""
     <div class="metric-card">
         <div class="metric-label">Confirmation Gate</div>
@@ -521,20 +480,22 @@ with kpi2:
     """, unsafe_allow_html=True)
 
 with kpi3:
-    st.markdown("""
+    agent_state = "Online" if health_info.get("online") else "Unavailable"
+    st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-label">Routing Accuracy</div>
-        <div class="metric-value">100.0%</div>
-        <div class="metric-sub">Verified Benchmark Score</div>
+        <div class="metric-label">Agent Gateway</div>
+        <div class="metric-value">{agent_state}</div>
+        <div class="metric-sub">Live backend state</div>
     </div>
     """, unsafe_allow_html=True)
 
 with kpi4:
-    st.markdown("""
+    metrics_state = "Live" if metrics_data.get("available", True) else "Unavailable"
+    st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-label">Offline p50 Latency</div>
-        <div class="metric-value">2.2 ms</div>
-        <div class="metric-sub">Fast Schema RAG-Fusion</div>
+        <div class="metric-label">Operational Metrics</div>
+        <div class="metric-value">{metrics_state}</div>
+        <div class="metric-sub">No simulated telemetry</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -581,6 +542,12 @@ with tab_chat:
         id_val = target.get("id_value", "Unknown")
         upd_col = change.get("update_column") or target.get("update_column") or "Column"
         new_val = change.get("new_value", "N/A")
+        safe_action_id = html.escape(str(action_id))
+        safe_target_sheet = html.escape(str(target_sheet))
+        safe_id_col = html.escape(str(id_col))
+        safe_id_val = html.escape(str(id_val))
+        safe_upd_col = html.escape(str(upd_col))
+        safe_new_val = html.escape(str(new_val))
 
         # Lookup existing value if present
         cur_val = "N/A"
@@ -588,6 +555,7 @@ with tab_chat:
             match = active_df[active_df[id_col].astype(str) == str(id_val)]
             if not match.empty:
                 cur_val = match.iloc[0][upd_col]
+        safe_cur_val = html.escape(str(cur_val))
 
         st.markdown(f"""
         <div class="gate-card">
@@ -596,16 +564,16 @@ with tab_chat:
                     ⚠️ HUMAN-IN-THE-LOOP CONFIRMATION REQUIRED
                 </span>
                 <span style="font-family: 'JetBrains Mono'; font-size: 0.8rem; color: #9ca3af;">
-                    TTL: 5 Minutes (Action: <code>{action_id[:8]}...</code>)
+                    TTL: 5 Minutes (Action: <code>{safe_action_id[:8]}...</code>)
                 </span>
             </div>
             <div style="font-size: 0.85rem; color: #d1d5db; margin-bottom: 12px;">
-                Target: <strong>{target_sheet}</strong> &bull; Match: <code>{id_col} = '{id_val}'</code> &bull; Column: <code>{upd_col}</code>
+                Target: <strong>{safe_target_sheet}</strong> &bull; Match: <code>{safe_id_col} = '{safe_id_val}'</code> &bull; Column: <code>{safe_upd_col}</code>
             </div>
             <div style="display: flex; gap: 16px; background: rgba(0,0,0,0.3); padding: 10px 16px; border-radius: 8px; font-family: 'JetBrains Mono'; font-size: 0.85rem; align-items: center; margin-bottom: 14px;">
-                <div><span style="color: #9ca3af;">Current Value:</span> <del style="color: #f87171;">{cur_val}</del></div>
+                <div><span style="color: #9ca3af;">Current Value:</span> <del style="color: #f87171;">{safe_cur_val}</del></div>
                 <div style="color: #9ca3af;">➔</div>
-                <div><span style="color: #9ca3af;">Proposed Value:</span> <strong style="color: #34d399;">{new_val}</strong></div>
+                <div><span style="color: #9ca3af;">Proposed Value:</span> <strong style="color: #34d399;">{safe_new_val}</strong></div>
             </div>
         </div>
         """, unsafe_allow_html=True)

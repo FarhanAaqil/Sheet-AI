@@ -9,6 +9,7 @@ import sqlite3
 import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone, timedelta
+from security import redact_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -80,17 +81,7 @@ SENSITIVE_PATTERNS = [
 
 def scrub_credentials(text: Any) -> str:
     """Scrub sensitive keys, passwords, and private tokens from string or JSON."""
-    if text is None:
-        return ""
-    if not isinstance(text, str):
-        try:
-            text = json.dumps(text, default=str)
-        except Exception:
-            text = str(text)
-
-    for pattern in SENSITIVE_PATTERNS:
-        text = pattern.sub("[REDACTED_CREDENTIAL]", text)
-    return text
+    return redact_sensitive(text)
 
 
 # Tool Call Logging Helper
@@ -295,5 +286,4 @@ def get_recent_eval_runs(limit: int = 10) -> List[Dict[str, Any]]:
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
-
 

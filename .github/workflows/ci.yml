@@ -13,6 +13,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -24,7 +31,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov httpx
+          pip install pytest pytest-cov httpx pip-audit
+
+      - name: Audit Python dependencies
+        run: |
+          pip-audit -r requirements.txt
 
       - name: Static Write Isolation Check (Guardrail Enforcer)
         run: |
@@ -33,3 +44,7 @@ jobs:
       - name: Run Unit & Regression Test Suite
         run: |
           pytest tests/ -v
+
+      - name: Build production container
+        run: |
+          docker build --tag sheetsense-ai:ci .

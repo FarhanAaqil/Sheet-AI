@@ -6,6 +6,7 @@
 # 4. Global exception sanitization preventing stack trace leakage.
 
 import time
+import hashlib
 import pytest
 from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
@@ -49,12 +50,13 @@ def test_rate_limiter_endpoint_429(client, monkeypatch):
     limiter = get_rate_limiter()
     limiter.redis_client = None  # in-memory test
 
-    api_key = "rate-limit-test-key"
+    api_key = "dev-key-123"
     headers = {"X-API-Key": api_key}
+    identifier = "key:" + hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:24]
 
     # Artificially consume the 60 req/min limit
     for _ in range(60):
-        limiter.check_rate_limit(api_key, "chat", max_requests=60, window_seconds=60)
+        limiter.check_rate_limit(identifier, "chat", max_requests=60, window_seconds=60)
 
     # Next request must return 429
     resp = client.post(
@@ -65,6 +67,7 @@ def test_rate_limiter_endpoint_429(client, monkeypatch):
     assert resp.status_code == 429
     assert "Rate limit" in resp.json()["detail"]
     assert "Retry-After" in resp.headers
+    limiter._memory_windows.clear()
 
 
 # 2. Credential Scrubber Tests

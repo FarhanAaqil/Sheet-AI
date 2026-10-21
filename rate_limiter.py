@@ -9,6 +9,7 @@ import os
 import time
 import uuid
 import logging
+import hashlib
 from collections import defaultdict, deque
 from typing import Dict, Optional, Tuple
 from fastapi import HTTPException, Request, Security
@@ -43,8 +44,15 @@ class RateLimiter:
                 self.redis_client = client
                 logger.info(f"RateLimiter connected to Redis at '{self.redis_url}'.")
             except Exception as e:
+                app_env = os.getenv("APP_ENV", os.getenv("ENV", "development")).lower()
+                if app_env in {"production", "staging"}:
+                    raise RuntimeError(
+                        "Redis is required for distributed production rate limiting."
+                    ) from e
                 logger.warning(
-                    f"RateLimiter could not connect to Redis ({e}). Using in-memory fallback."
+                    "RateLimiter could not connect to Redis; using memory: "
+                    "exception_type=%s",
+                    type(e).__name__,
                 )
 
 
@@ -83,8 +91,16 @@ class RateLimiter:
                     retry_after = max(1, int(window_seconds - (now - oldest_ts)))
                     return False, retry_after
                 return True, 0
-            except Exception as e:
-                logger.warning(f"Redis rate limit check error ({e}); falling back to memory.")
+            except Exception as exc:
+                app_env = os.getenv("APP_ENV", os.getenv("ENV", "development")).lower()
+                if app_env in {"production", "staging"}:
+                    raise RuntimeError(
+                        "Redis rate-limit enforcement failed in a protected environment."
+                    ) from exc
+                logger.warning(
+                    "Redis rate-limit check failed; using memory: exception_type=%s",
+                    type(exc).__name__,
+                )
 
         # In-memory sliding window fallback
         timestamps = self._memory_windows[key]
@@ -118,7 +134,10 @@ def rate_limit(max_requests: int, window_seconds: int = 60, endpoint_group: str 
         request: Request,
         api_key: Optional[str] = Security(api_key_header),
     ):
-        identifier = api_key or (request.client.host if request.client else "anonymous")
+        if api_key:
+            identifier = "key:" + hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:24]
+        else:
+            identifier = "ip:" + (request.client.host if request.client else "anonymous")
         limiter = get_rate_limiter()
         allowed, retry_after = limiter.check_rate_limit(
             identifier=identifier,

@@ -59,8 +59,11 @@ class MultiQueryReformulator:
                         variants = [str(p).strip() for p in parsed[:3]]
                         if len(set(variants)) == 3:
                             return variants
-            except Exception as e:
-                logger.warning(f"LLM query reformulation failed, using deterministic fallback: {e}")
+            except Exception as exc:
+                logger.warning(
+                    "LLM reformulation failed; using fallback: exception_type=%s",
+                    type(exc).__name__,
+                )
 
         # Deterministic fallback reformulation
         return self._deterministic_reformulate(clean_query)
@@ -314,8 +317,11 @@ class RAGFusionRetriever:
                 for rank, idx in enumerate(ranked_indices):
                     # Reciprocal Rank Fusion: 1 / (k + rank)
                     rrf_scores[idx] += 1.0 / (self.k + rank)
-            except Exception as e:
-                logger.warning(f"Error computing similarity for variant '{variant}': {e}")
+            except Exception as exc:
+                logger.warning(
+                    "Similarity computation failed: exception_type=%s",
+                    type(exc).__name__,
+                )
 
         # 3. Sort by cumulative RRF score
         sorted_indices = sorted(rrf_scores.keys(), key=lambda i: rrf_scores[i], reverse=True)
@@ -348,4 +354,3 @@ def format_retrieval_context(candidates: List[Dict[str, Any]]) -> str:
         )
     lines.append("Use these hints as helpful context to select the right sheets and columns.")
     return "\n".join(lines)
-

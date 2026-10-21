@@ -71,7 +71,7 @@ def client(mock_spreadsheet, monkeypatch):
     mock_agent = MockAgent()
     monkeypatch.setattr("main._agent", mock_agent)
     app.dependency_overrides[get_agent] = lambda: mock_agent
-    with TestClient(app) as tc:
+    with TestClient(app, headers={"X-API-Key": "dev-key-123"}) as tc:
         yield tc
     app.dependency_overrides.clear()
 

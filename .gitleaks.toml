@@ -1,0 +1,11 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known documentation placeholders and deterministic redaction-test fixtures"
+stopwords = [
+  "your-secret-api-key",
+  "replace-with-a-random-secret",
+  "12345678901234567890123456789012",
+  "...fake...==",
+]

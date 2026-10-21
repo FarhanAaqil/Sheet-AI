@@ -6,7 +6,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)
 ![LangGraph](https://img.shields.io/badge/LangGraph-ReAct%20Agent-green.svg)
 ![Redis](https://img.shields.io/badge/Redis-7.0-red.svg)
-![Tests](https://img.shields.io/badge/Tests-84%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/Tests-90%20passed-brightgreen.svg)
 ![Confirmation Gate](https://img.shields.io/badge/Confirmation%20Gate-100%25%20Gated-success.svg)
 ![Formula Shield](https://img.shields.io/badge/Formula%20Shield-100%25%20Blocked-critical.svg)
 
@@ -47,9 +47,10 @@ cp .env.example .env
 # 3. Launch the full stack
 docker-compose up -d --build
 ```
-- **Web Dashboard & REST Gateway:** [http://localhost:8000](http://localhost:8000)
+- **Web Dashboard:** [http://localhost:8000/static/index.html](http://localhost:8000/static/index.html)
+- **REST Gateway:** [http://localhost:8000](http://localhost:8000)
 - **Interactive Swagger Documentation:** [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Redis Cluster Service:** `localhost:6379` (backed by persistent volume)
+- **Redis Service:** internal Compose network only (backed by a persistent volume)
 
 ---
 
@@ -66,8 +67,8 @@ pip install -r requirements.txt
 # 3. Launch FastAPI gateway
 uvicorn main:app --reload --port 8000
 
-# 4. (Optional) Run companion Streamlit UI
-streamlit run app.py
+# 4. Open the bundled browser client
+# http://localhost:8000/static/index.html
 ```
 
 ### Environment Configuration (`.env`)
@@ -76,6 +77,7 @@ Refer to [.env.example](.env.example) for full variable annotations:
 
 ```env
 # LLM Provider
+APP_ENV=development
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-1.5-flash
 
@@ -85,9 +87,16 @@ GOOGLE_CREDS_PATH=credentials.json
 
 # Gateway Security & Session Storage
 SHEETSENSE_API_KEY=replace-with-a-random-secret
+ALLOW_INSECURE_NO_AUTH=false
+ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
 REDIS_URL=redis://localhost:6379/0
 SQLITE_DB_PATH=sheetsense.db
 ```
+
+Authentication fails closed when no API key is configured. Production requires
+a hashed API key or role-bearing multi-key JSON configuration. Plaintext API
+keys are retained for local compatibility only. Google credentials are injected
+at runtime and are never copied into the container image.
 
 ---
 
@@ -141,7 +150,6 @@ Ask questions in plain English. The agent formulates queries, invokes safe aggre
 flowchart TD
     subgraph ClientLayer["Client Interfaces"]
         UI["Desktop Web Dashboard (static/index.html)"]
-        StreamlitApp["Streamlit Companion UI (app.py)"]
         ExternalAPI["REST API Clients (Curl / Postman / SDK)"]
     end
 
@@ -234,7 +242,9 @@ All requests accept the `X-API-Key` header defined in `.env`.
 | Method | Endpoint | Description | Rate Limit |
 |---|---|---|---|
 | `GET` | `/` | Serves interactive web dashboard UI | Unlimited |
-| `GET` | `/health` | Service health & worksheet connection status | 60 req/min |
+| `GET` | `/health/live` | Public process liveness check | Unlimited |
+| `GET` | `/health/ready` | Authenticated dependency readiness check | Unlimited |
+| `GET` | `/health` | Authenticated worksheet connection status | Unlimited |
 | `POST` | `/chat` | Submit plain-English queries to the agent | 60 req/min |
 | `POST` | `/actions/{id}/confirm` | Confirm & execute staged destructive mutation | 20 req/min |
 | `POST` | `/actions/{id}/reject` | Reject & discard staged mutation | 20 req/min |
@@ -362,8 +372,15 @@ curl http://localhost:8000/metrics -H "X-API-Key: your-secret-api-key"
 - A static AST analysis script ([scripts/check_write_isolation.py](scripts/check_write_isolation.py)) runs in GitHub Actions CI, failing the build if any `update_cell`, `delete_row`, or `append_row` call appears outside the authorized gateway.
 
 ### 4. Credential Scrubbing & Error Sanitization
-- Regex filters automatically redact Google API keys (`AIzaSy...`), service account private keys, and bearer tokens from audit tables before persisting to disk.
+- Regex filters redact API keys, private keys, bearer tokens, passwords, and credential-bearing Redis/database URLs from audit tables.
 - Uncaught exceptions generate a unique random UUID `error_id` and return user-safe HTTP 500 messages, preventing internal path or schema exposure.
+
+### 5. Browser and Gateway Security
+- API keys map to principals with viewer, editor, approver, or admin roles.
+- CORS uses an explicit origin allowlist; wildcard production origins are rejected.
+- Sheet, cell, user, model, tool, and confirmation content is escaped before browser rendering.
+- CSP, frame denial, MIME sniffing protection, referrer policy, and permissions policy headers are applied.
+- If the backend is unavailable, clients report failure and never fabricate answers, metrics, or pending actions.
 
 ---
 
