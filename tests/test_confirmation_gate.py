@@ -63,9 +63,11 @@ def client(mock_spreadsheet, monkeypatch):
     class MockAgent:
         spreadsheet = mock_spreadsheet
         sheet_tools = MockTools()
-        def get_sheet_names(self):
+        def resolve_spreadsheet(self, principal_id, connection_id=None):
+            return "default", self.spreadsheet
+        def get_sheet_names(self, principal_id="legacy-admin", connection_id=None):
             return ["Orders"]
-        def get_sheet_schema(self, sheet_name):
+        def get_sheet_schema(self, sheet_name, principal_id="legacy-admin", connection_id=None):
             return {"sheet_name": "Orders", "columns": ["OrderID", "Customer", "Price", "Status"]}
 
     mock_agent = MockAgent()
@@ -161,7 +163,7 @@ def test_confirm_endpoint_executes_valid_pending_action(client, mock_spreadsheet
 
 def test_confirm_endpoint_blocks_replay_attacks(client):
     """
-    Attempting to confirm an already-confirmed action must return 410 Gone.
+    Repeating the same idempotent confirmation returns the stored result.
     """
     action_id = str(uuid.uuid4())
     database.create_pending_action(
@@ -176,10 +178,10 @@ def test_confirm_endpoint_blocks_replay_attacks(client):
     resp1 = client.post(f"/actions/{action_id}/confirm")
     assert resp1.status_code == 200
 
-    # Second confirm must fail with 410 Gone
+    # Same key replays the stored result and must not execute another write.
     resp2 = client.post(f"/actions/{action_id}/confirm")
-    assert resp2.status_code == 410
-    assert "already been confirmed" in resp2.json()["detail"]
+    assert resp2.status_code == 200
+    assert resp2.json()["action_id"] == action_id
 
 
 def test_confirm_endpoint_blocks_expired_actions(client):

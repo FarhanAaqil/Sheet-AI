@@ -45,12 +45,31 @@ def init_db(db_path: Optional[str] = None):
     CREATE TABLE IF NOT EXISTS pending_actions (
         action_id TEXT PRIMARY KEY,
         session_id TEXT,
+        principal_id TEXT NOT NULL DEFAULT 'legacy-admin',
+        connection_id TEXT,
         tool_name TEXT NOT NULL,
         target_json TEXT NOT NULL,
         proposed_change_json TEXT NOT NULL,
+        expected_state_json TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         expires_at TIMESTAMP NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending' -- pending | confirmed | expired | rejected
+        status TEXT NOT NULL DEFAULT 'pending',
+        claimed_at TIMESTAMP,
+        executed_at TIMESTAMP,
+        failure_code TEXT,
+        idempotency_key TEXT,
+        result_json TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS spreadsheet_connections (
+        connection_id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL,
+        spreadsheet_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        permission_level TEXT NOT NULL DEFAULT 'editor',
+        created_at TIMESTAMP NOT NULL,
+        last_sync_at TIMESTAMP,
+        UNIQUE(principal_id, spreadsheet_id)
     );
 
     CREATE TABLE IF NOT EXISTS eval_runs (
@@ -62,6 +81,38 @@ def init_db(db_path: Optional[str] = None):
         run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
+
+    existing_columns = {
+        row[1] for row in cursor.execute("PRAGMA table_info(pending_actions)").fetchall()
+    }
+    migrations = {
+        "principal_id": "TEXT NOT NULL DEFAULT 'legacy-admin'",
+        "connection_id": "TEXT",
+        "expected_state_json": "TEXT",
+        "claimed_at": "TIMESTAMP",
+        "executed_at": "TIMESTAMP",
+        "failure_code": "TEXT",
+        "idempotency_key": "TEXT",
+        "result_json": "TEXT",
+    }
+    for column, definition in migrations.items():
+        if column not in existing_columns:
+            cursor.execute(
+                f"ALTER TABLE pending_actions ADD COLUMN {column} {definition}"
+            )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pending_owner "
+        "ON pending_actions(principal_id, status, expires_at)"
+    )
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_action_idempotency "
+        "ON pending_actions(principal_id, idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_connections_owner "
+        "ON spreadsheet_connections(principal_id, created_at)"
+    )
 
     conn.commit()
     conn.close()
@@ -127,6 +178,9 @@ def create_pending_action(
     target: Dict[str, Any],
     proposed_change: Dict[str, Any],
     session_id: Optional[str] = None,
+    principal_id: str = "legacy-admin",
+    connection_id: Optional[str] = None,
+    expected_state: Optional[Dict[str, Any]] = None,
     ttl_minutes: int = 5,
 ) -> Dict[str, Any]:
     """Create and persist a pending destructive action with a 5-minute TTL."""
@@ -135,20 +189,28 @@ def create_pending_action(
 
     target_json = json.dumps(target)
     proposed_change_json = json.dumps(proposed_change)
+    expected_state_json = json.dumps(expected_state) if expected_state is not None else None
 
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT INTO pending_actions (action_id, session_id, tool_name, target_json, proposed_change_json, created_at, expires_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+        INSERT INTO pending_actions (
+            action_id, session_id, principal_id, connection_id, tool_name,
+            target_json, proposed_change_json, expected_state_json,
+            created_at, expires_at, status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
         """,
         (
             action_id,
             session_id,
+            principal_id,
+            connection_id,
             tool_name,
             target_json,
             proposed_change_json,
+            expected_state_json,
             now.isoformat(),
             expires_at.isoformat(),
         ),
@@ -161,6 +223,8 @@ def create_pending_action(
         "tool_name": tool_name,
         "target": target,
         "proposed_change": proposed_change,
+        "principal_id": principal_id,
+        "connection_id": connection_id,
         "requires_confirmation": True,
         "expires_at": expires_at.isoformat(),
     }
@@ -190,6 +254,245 @@ def update_action_status(action_id: str, status: str) -> bool:
     updated = cursor.rowcount > 0
     conn.close()
     return updated
+
+
+def claim_pending_action(
+    action_id: str,
+    principal_id: str,
+    idempotency_key: str,
+    stale_after_seconds: int = 120,
+) -> Dict[str, Any]:
+    """Atomically claim one unexpired pending action for one execution attempt."""
+    now = datetime.now(timezone.utc)
+    stale_before = now - timedelta(seconds=stale_after_seconds)
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM pending_actions WHERE action_id = ?", (action_id,)
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return {"claim_status": "not_found"}
+        action = dict(row)
+        if action.get("principal_id") != principal_id:
+            conn.commit()
+            return {"claim_status": "forbidden"}
+
+        if action["status"] == "executing" and action.get("claimed_at"):
+            claimed_at = datetime.fromisoformat(action["claimed_at"])
+            if claimed_at.tzinfo is None:
+                claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+            if claimed_at <= stale_before:
+                conn.execute(
+                    "UPDATE pending_actions SET status='failed', "
+                    "failure_code='EXECUTION_STATE_UNKNOWN', executed_at=? "
+                    "WHERE action_id=? AND status='executing'",
+                    (now.isoformat(), action_id),
+                )
+                action["status"] = "failed"
+                action["failure_code"] = "EXECUTION_STATE_UNKNOWN"
+
+        if action["status"] == "confirmed":
+            action["claim_status"] = (
+                "idempotent_replay"
+                if action.get("idempotency_key") == idempotency_key
+                else "already_confirmed"
+            )
+            conn.commit()
+            return action
+        if action["status"] in {"rejected", "expired", "failed"}:
+            action["claim_status"] = action["status"]
+            conn.commit()
+            return action
+        if action["status"] == "executing":
+            action["claim_status"] = (
+                "in_progress"
+                if action.get("idempotency_key") == idempotency_key
+                else "idempotency_conflict"
+            )
+            conn.commit()
+            return action
+
+        expires_at = datetime.fromisoformat(action["expires_at"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now:
+            conn.execute(
+                "UPDATE pending_actions SET status='expired', executed_at=? "
+                "WHERE action_id=? AND status='pending'",
+                (now.isoformat(), action_id),
+            )
+            conn.commit()
+            action["claim_status"] = "expired"
+            return action
+
+        cursor = conn.execute(
+            "UPDATE pending_actions SET status='executing', claimed_at=?, "
+            "idempotency_key=? WHERE action_id=? AND principal_id=? "
+            "AND status='pending' AND expires_at>?",
+            (now.isoformat(), idempotency_key, action_id, principal_id, now.isoformat()),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return {"claim_status": "in_progress"}
+        conn.commit()
+        claimed = get_pending_action(action_id) or {}
+        claimed["claim_status"] = "claimed"
+        return claimed
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return {"claim_status": "idempotency_conflict"}
+    finally:
+        conn.close()
+
+
+def complete_action(action_id: str, result: Dict[str, Any]) -> bool:
+    """Transition executing -> confirmed and persist the idempotent result."""
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "UPDATE pending_actions SET status='confirmed', executed_at=?, "
+        "result_json=?, failure_code=NULL WHERE action_id=? AND status='executing'",
+        (
+            datetime.now(timezone.utc).isoformat(),
+            json.dumps(result, default=str),
+            action_id,
+        ),
+    )
+    conn.commit()
+    updated = cursor.rowcount == 1
+    conn.close()
+    return updated
+
+
+def fail_action(
+    action_id: str,
+    failure_code: str,
+    result: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Transition executing -> failed. Failed actions are never auto-retried."""
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "UPDATE pending_actions SET status='failed', executed_at=?, "
+        "failure_code=?, result_json=? WHERE action_id=? AND status='executing'",
+        (
+            datetime.now(timezone.utc).isoformat(),
+            failure_code,
+            json.dumps(result or {}, default=str),
+            action_id,
+        ),
+    )
+    conn.commit()
+    updated = cursor.rowcount == 1
+    conn.close()
+    return updated
+
+
+def reject_pending_action(action_id: str, principal_id: str) -> str:
+    """Atomically reject an owned pending action, or expire it if its TTL elapsed."""
+    now = datetime.now(timezone.utc)
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT principal_id, status, expires_at FROM pending_actions WHERE action_id=?",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return "not_found"
+        if row["principal_id"] != principal_id:
+            conn.commit()
+            return "forbidden"
+        if row["status"] != "pending":
+            conn.commit()
+            return row["status"]
+        expires_at = datetime.fromisoformat(row["expires_at"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        status = "expired" if expires_at <= now else "rejected"
+        cursor = conn.execute(
+            "UPDATE pending_actions SET status=?, executed_at=? "
+            "WHERE action_id=? AND status='pending'",
+            (status, now.isoformat(), action_id),
+        )
+        conn.commit()
+        return status if cursor.rowcount == 1 else "conflict"
+    finally:
+        conn.close()
+
+
+def upsert_spreadsheet_connection(
+    connection_id: str,
+    principal_id: str,
+    spreadsheet_id: str,
+    display_name: str,
+    permission_level: str = "editor",
+) -> Dict[str, Any]:
+    """Create or refresh a tenant-owned spreadsheet connection."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    conn.execute(
+        """
+        INSERT INTO spreadsheet_connections (
+            connection_id, principal_id, spreadsheet_id, display_name,
+            permission_level, created_at, last_sync_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(principal_id, spreadsheet_id) DO UPDATE SET
+            display_name=excluded.display_name,
+            permission_level=excluded.permission_level,
+            last_sync_at=excluded.last_sync_at
+        """,
+        (
+            connection_id,
+            principal_id,
+            spreadsheet_id,
+            display_name,
+            permission_level,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM spreadsheet_connections WHERE principal_id=? AND spreadsheet_id=?",
+        (principal_id, spreadsheet_id),
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def get_spreadsheet_connection(
+    connection_id: str, principal_id: str
+) -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT * FROM spreadsheet_connections WHERE connection_id=? AND principal_id=?",
+        (connection_id, principal_id),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_spreadsheet_connections(principal_id: str) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT * FROM spreadsheet_connections WHERE principal_id=? ORDER BY created_at",
+        (principal_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def touch_spreadsheet_connection(connection_id: str, principal_id: str) -> None:
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE spreadsheet_connections SET last_sync_at=? "
+        "WHERE connection_id=? AND principal_id=?",
+        (datetime.now(timezone.utc).isoformat(), connection_id, principal_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 # Metrics Aggregation Helper (Architecture §2)
@@ -229,7 +532,14 @@ def get_metrics_summary() -> Dict[str, Any]:
         GROUP BY status
     """)
     action_rows = cursor.fetchall()
-    actions = {"pending": 0, "confirmed": 0, "expired": 0, "rejected": 0}
+    actions = {
+        "pending": 0,
+        "executing": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "expired": 0,
+        "rejected": 0,
+    }
     for row in action_rows:
         status = row["status"]
         if status in actions:
@@ -286,4 +596,3 @@ def get_recent_eval_runs(limit: int = 10) -> List[Dict[str, Any]]:
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
-

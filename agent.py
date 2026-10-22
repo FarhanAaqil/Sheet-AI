@@ -8,6 +8,7 @@ import re
 import ast
 import uuid
 import json
+import hashlib
 import logging
 from typing import Any, Dict, List, Optional, Union
 
@@ -19,6 +20,18 @@ from dotenv import load_dotenv
 
 import database
 from session_store import SessionStore, get_session_store
+from cache_service import WorksheetCache
+from request_context import (
+    RequestContext,
+    clear_pending_action,
+    get_pending_action,
+    get_request_context,
+    reset_pending_action,
+    reset_request_context,
+    set_pending_action,
+    set_request_context,
+)
+from spreadsheet_registry import SpreadsheetRegistry
 from retrieval import (
     SchemaIndex,
     MultiQueryReformulator,
@@ -248,6 +261,9 @@ def execute_structured_aggregation(
     filter_value: Any = None,
 ) -> Any:
     """Execute a structured filtering and aggregation operation directly via pandas."""
+    max_rows = int(os.getenv("MAX_AGGREGATION_ROWS", "100000"))
+    if len(df) > max_rows:
+        raise ValueError("Aggregation input exceeds the configured row limit.")
     sub_df = df
     if filter_column and filter_operator is not None:
         if filter_column not in df.columns:
@@ -266,7 +282,11 @@ def execute_structured_aggregation(
         elif filter_operator == "<=":
             sub_df = sub_df[pd.to_numeric(series, errors="coerce") <= float(filter_value)]
         elif filter_operator.lower() == "contains":
-            sub_df = sub_df[series.astype(str).str.contains(str(filter_value), na=False)]
+            sub_df = sub_df[
+                series.astype(str).str.contains(
+                    str(filter_value), regex=False, na=False
+                )
+            ]
         else:
             raise ValueError(f"Unsupported filter operator: '{filter_operator}'.")
 
@@ -278,16 +298,22 @@ def execute_structured_aggregation(
         target = sub_df
 
     agg = aggregation.lower().strip()
+    if agg in {"sum", "mean", "average", "avg", "min", "max"}:
+        if isinstance(target, pd.DataFrame):
+            raise ValueError("A numeric aggregation requires a target column.")
+        numeric_target = pd.to_numeric(target, errors="coerce")
+        if numeric_target.notna().sum() == 0:
+            raise ValueError("The target column contains no numeric values.")
     if agg == "sum":
-        return pd.to_numeric(target, errors="coerce").sum()
+        return numeric_target.sum()
     elif agg in ("mean", "average", "avg"):
-        return pd.to_numeric(target, errors="coerce").mean()
+        return numeric_target.mean()
     elif agg == "count":
         return target.count()
     elif agg == "min":
-        return pd.to_numeric(target, errors="coerce").min()
+        return numeric_target.min()
     elif agg == "max":
-        return pd.to_numeric(target, errors="coerce").max()
+        return numeric_target.max()
     elif agg == "value_counts":
         return target.value_counts()
     else:
@@ -298,7 +324,15 @@ def execute_structured_aggregation(
 
 class ReadSheetInput(BaseModel):
     sheet_name: str = Field(..., description="Name of the worksheet to read.")
-    query: Optional[str] = Field(default="all rows", description="Filter description or row query.")
+    columns: Optional[List[str]] = Field(default=None, description="Columns to return.")
+    filters: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Structured filters with column, operator, and value.",
+    )
+    sort_by: Optional[str] = None
+    descending: bool = False
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
     @field_validator("sheet_name")
     def check_sheet_name(cls, v):
@@ -402,6 +436,7 @@ class CrossSheetJoinInput(BaseModel):
     sheet1: str = Field(..., description="First worksheet name.")
     sheet2: str = Field(..., description="Second worksheet name.")
     on_column: str = Field(..., description="Common column name to join on.")
+    max_output_rows: int = Field(default=1000, ge=1, le=5000)
 
     @field_validator("sheet1", "sheet2", "on_column")
     def check_identifiers(cls, v, info):
@@ -440,9 +475,10 @@ class SheetTools:
 
     def __init__(self, spreadsheet: gspread.Spreadsheet):
         self.spreadsheet = spreadsheet
-        self._cache: Dict[str, pd.DataFrame] = {}
-        self.active_session_id: Optional[str] = None
-        self.last_pending_action: Optional[Dict[str, Any]] = None
+        clear_pending_action()
+        self.cache = WorksheetCache(
+            ttl_seconds=int(os.getenv("SHEET_CACHE_TTL_SECONDS", "30"))
+        )
         self._load_all_sheets()
 
     # ---- Internal helpers ------------------------------------------------
@@ -452,25 +488,74 @@ class SheetTools:
         for ws in self.spreadsheet.worksheets():
             try:
                 records = ws.get_all_records()
-                if records:
-                    self._cache[ws.title] = pd.DataFrame(records)
+                self.cache.put(
+                    ws.title,
+                    pd.DataFrame(records) if records else pd.DataFrame(),
+                )
             except Exception as exc:
                 logger.warning(
                     "Could not load worksheet: exception_type=%s",
                     type(exc).__name__,
                 )
 
-    def _get_df(self, sheet_name: str) -> Optional[pd.DataFrame]:
-        return self._cache.get(sheet_name)
+    @property
+    def _cache(self) -> Dict[str, pd.DataFrame]:
+        """Compatibility view; callers receive copies, never mutable shared frames."""
+        return self.cache.frames()
 
-    def _refresh_sheet(self, sheet_name: str):
+    @property
+    def last_pending_action(self) -> Optional[Dict[str, Any]]:
+        """Request-local compatibility view of the action staged by this context."""
+        return get_pending_action()
+
+    @last_pending_action.setter
+    def last_pending_action(self, value: Optional[Dict[str, Any]]) -> None:
+        if value is None:
+            clear_pending_action()
+        else:
+            set_pending_action(value)
+
+    def _get_df(self, sheet_name: str, refresh: bool = False) -> Optional[pd.DataFrame]:
+        if refresh or self.cache.is_stale(sheet_name):
+            self._refresh_sheet(sheet_name)
+        entry = self.cache.get(sheet_name)
+        return entry.frame.copy() if entry is not None else None
+
+    def _refresh_sheet(self, sheet_name: str) -> bool:
         """Refresh a single sheet after a write/delete operation."""
         try:
             ws = self.spreadsheet.worksheet(sheet_name)
             records = ws.get_all_records()
-            self._cache[sheet_name] = pd.DataFrame(records) if records else pd.DataFrame()
+            _, schema_changed = self.cache.put(
+                sheet_name,
+                pd.DataFrame(records) if records else pd.DataFrame(),
+            )
+            return schema_changed
         except Exception as exc:
             logger.warning("Worksheet refresh failed: exception_type=%s", type(exc).__name__)
+            return False
+
+    def cache_metadata(self, sheet_name: str) -> Dict[str, Any]:
+        return self.cache.metadata(sheet_name)
+
+    def _expected_row_state(
+        self, sheet_name: str, id_column: str, id_value: Any
+    ) -> Dict[str, Any]:
+        df = self._get_df(sheet_name, refresh=True)
+        if df is None or id_column not in df.columns:
+            raise ValueError("The target sheet or identifier column was not found.")
+        matches = df[df[id_column].astype(str) == str(id_value)]
+        if len(matches) != 1:
+            raise ValueError("The target identifier must match exactly one row.")
+        row = matches.iloc[0]
+        normalized = {str(column): str(row[column]) for column in df.columns}
+        payload = json.dumps(
+            normalized, sort_keys=True, separators=(",", ":"), default=str
+        )
+        return {
+            "row_fingerprint": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+            "captured_at": self.cache.metadata(sheet_name)["last_refreshed_at"],
+        }
 
     # ---- Argument Parser Helper ------------------------------------------
 
@@ -509,17 +594,71 @@ class SheetTools:
             sheet_name = params.get("sheet_name")
             if not sheet_name:
                 return "Error: 'sheet_name' is required."
-            query = params.get("query", "all rows")
             df = self._get_df(sheet_name)
             if df is None or df.empty:
                 return f"Sheet '{sheet_name}' is empty or not found."
+            selected = df
+            for condition in params.get("filters") or []:
+                column = condition.get("column")
+                operator = condition.get("operator", "==")
+                value = condition.get("value")
+                if column not in selected.columns:
+                    return "Error reading sheet: a requested filter column was not found."
+                series = selected[column]
+                if operator == "contains":
+                    mask = series.astype(str).str.contains(str(value), regex=False, na=False)
+                elif operator in {"==", "!="}:
+                    mask = series == value
+                    if operator == "!=":
+                        mask = ~mask
+                elif operator in {">", ">=", "<", "<="}:
+                    numeric = pd.to_numeric(series, errors="coerce")
+                    try:
+                        target = float(value)
+                    except (TypeError, ValueError):
+                        return "Error reading sheet: numeric filters require a numeric value."
+                    mask = {
+                        ">": numeric > target,
+                        ">=": numeric >= target,
+                        "<": numeric < target,
+                        "<=": numeric <= target,
+                    }[operator]
+                else:
+                    return "Error reading sheet: unsupported filter operator."
+                selected = selected[mask]
+            columns = params.get("columns")
+            if columns:
+                if any(column not in selected.columns for column in columns):
+                    return "Error reading sheet: requested columns were not found."
+                selected = selected[columns]
+            sort_by = params.get("sort_by")
+            if sort_by:
+                if sort_by not in selected.columns:
+                    return "Error reading sheet: the sort column was not found."
+                selected = selected.sort_values(
+                    sort_by, ascending=not bool(params.get("descending", False))
+                )
+            offset = max(0, int(params.get("offset", 0)))
+            limit = min(100, max(1, int(params.get("limit", 50))))
+            page = selected.iloc[offset : offset + limit]
+            next_offset = offset + len(page) if offset + len(page) < len(selected) else None
+            metadata = {
+                "sheet_name": sheet_name,
+                "matched_rows": len(selected),
+                "returned_rows": len(page),
+                "offset": offset,
+                "limit": limit,
+                "truncated": next_offset is not None,
+                "next_offset": next_offset,
+            }
+            return json.dumps(metadata) + "\n\n" + page.to_markdown(index=False)
             # Return up to 50 rows as markdown to avoid context overflow
             return (
                 f"Sheet '{sheet_name}' — {len(df)} rows × {len(df.columns)} columns\n\n"
                 + df.head(50).to_markdown(index=False)
             )
-        except Exception as e:
-            return f"Error reading sheet: {e}"
+        except Exception:
+            return "Error reading sheet: the requested operation could not be completed."
 
     def filter_and_aggregate(self, input_str: Any = "", **kwargs) -> str:
         """
@@ -605,16 +744,25 @@ class SheetTools:
                 "update_column": update_column,
                 "new_value": new_value,
             }
+            context = get_request_context() or RequestContext(
+                "legacy-admin", "legacy-session", "default", "direct-tool"
+            )
+            expected_state = self._expected_row_state(
+                sheet_name, id_column, id_value
+            )
 
             pending_action = database.create_pending_action(
                 action_id=action_id,
                 tool_name="update_cell",
                 target=target,
                 proposed_change=proposed_change,
-                session_id=self.active_session_id,
+                session_id=context.session_id,
+                principal_id=context.principal_id,
+                connection_id=context.connection_id,
+                expected_state=expected_state,
                 ttl_minutes=5,
             )
-            self.last_pending_action = pending_action
+            set_pending_action(pending_action)
 
             return (
                 f"⚠️ CONFIRMATION REQUIRED: A pending update action has been staged with action_id: '{action_id}'. "
@@ -649,16 +797,25 @@ class SheetTools:
                 "id_value": id_value,
             }
             proposed_change = {"action": "delete"}
+            context = get_request_context() or RequestContext(
+                "legacy-admin", "legacy-session", "default", "direct-tool"
+            )
+            expected_state = self._expected_row_state(
+                sheet_name, id_column, id_value
+            )
 
             pending_action = database.create_pending_action(
                 action_id=action_id,
                 tool_name="delete_row",
                 target=target,
                 proposed_change=proposed_change,
-                session_id=self.active_session_id,
+                session_id=context.session_id,
+                principal_id=context.principal_id,
+                connection_id=context.connection_id,
+                expected_state=expected_state,
                 ttl_minutes=5,
             )
-            self.last_pending_action = pending_action
+            set_pending_action(pending_action)
 
             return (
                 f"⚠️ CONFIRMATION REQUIRED: A pending delete action has been staged with action_id: '{action_id}'. "
@@ -719,16 +876,41 @@ class SheetTools:
             df = self._get_df(sheet_name)
             if df is None:
                 return f"Sheet '{sheet_name}' not found."
-            col = df[column_name].apply(pd.to_numeric, errors="coerce").dropna()
-            Q1, Q3 = col.quantile(0.25), col.quantile(0.75)
-            IQR = Q3 - Q1
-            lower, upper = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
-            outliers = df[(col < lower) | (col > upper)]
+            if column_name not in df.columns:
+                return "Error finding anomalies: the requested column was not found."
+            numeric = pd.to_numeric(df[column_name], errors="coerce")
+            valid = numeric.dropna()
+            excluded_count = int(numeric.isna().sum())
+            if valid.empty:
+                return json.dumps({
+                    "outlier_count": 0,
+                    "excluded_value_count": excluded_count,
+                    "reason": "no_numeric_values",
+                })
+            q1, q3 = valid.quantile(0.25), valid.quantile(0.75)
+            iqr = q3 - q1
+            lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            mask = numeric.notna() & ((numeric < lower) | (numeric > upper))
+            outliers = df.loc[mask]
+            metadata = {
+                "outlier_count": len(outliers),
+                "excluded_value_count": excluded_count,
+                "q1": q1,
+                "q3": q3,
+                "iqr": iqr,
+                "lower_threshold": lower,
+                "upper_threshold": upper,
+                "zero_iqr": bool(iqr == 0),
+            }
             if outliers.empty:
-                return "No anomalies detected."
-            return f"{len(outliers)} outlier(s) found:\n" + outliers.head(20).to_markdown(index=False)
-        except Exception as e:
-            return f"Error finding anomalies: {e}"
+                return json.dumps(metadata, default=str)
+            return (
+                json.dumps(metadata, default=str)
+                + "\n"
+                + outliers.head(20).to_markdown(index=False)
+            )
+        except Exception:
+            return "Error finding anomalies: the operation could not be completed."
 
     def cross_sheet_join(self, input_str: Any = "", **kwargs) -> str:
         """
@@ -748,10 +930,40 @@ class SheetTools:
             df2 = self._get_df(sheet2)
             if df1 is None or df2 is None:
                 return "One or both sheets not found."
+            if on_column not in df1.columns or on_column not in df2.columns:
+                return "Cross-sheet join error: the join column is missing."
+            max_input_rows = int(os.getenv("MAX_JOIN_INPUT_ROWS", "50000"))
+            if len(df1) > max_input_rows or len(df2) > max_input_rows:
+                return "Cross-sheet join rejected: an input exceeds the row limit."
+            left_counts = df1[on_column].value_counts(dropna=False)
+            right_counts = df2[on_column].value_counts(dropna=False)
+            common = left_counts.index.intersection(right_counts.index)
+            estimated_rows = int(
+                sum(int(left_counts[key]) * int(right_counts[key]) for key in common)
+            )
+            max_output_rows = min(
+                5000, max(1, int(params.get("max_output_rows", 1000)))
+            )
+            if estimated_rows > max_output_rows:
+                return (
+                    "Cross-sheet join rejected: estimated output "
+                    f"{estimated_rows} rows exceeds limit {max_output_rows}."
+                )
             merged = pd.merge(df1, df2, on=on_column)
-            return f"Joined table ({len(merged)} rows):\n" + merged.head(30).to_markdown(index=False)
-        except Exception as e:
-            return f"Cross-sheet join error: {e}"
+            metadata = {
+                "joined_rows": len(merged),
+                "estimated_rows": estimated_rows,
+                "left_duplicate_keys": int((left_counts > 1).sum()),
+                "right_duplicate_keys": int((right_counts > 1).sum()),
+                "truncated": len(merged) > 100,
+            }
+            return (
+                json.dumps(metadata)
+                + "\n"
+                + merged.head(100).to_markdown(index=False)
+            )
+        except Exception:
+            return "Cross-sheet join error: the operation could not be completed."
 
 
 # SheetSense Agent — LangGraph ReAct Agent
@@ -778,54 +990,39 @@ class SheetSenseAgent:
     """
 
     def __init__(self, session_store: Optional[SessionStore] = None):
-        # --- Google Sheets connection ---
-        gc = _build_gspread_client()
-        sheet_url = os.getenv("GOOGLE_SHEET_URL")
+        sheet_url = os.getenv("GOOGLE_SHEET_URL", "")
         if not sheet_url:
             raise ValueError("GOOGLE_SHEET_URL environment variable not set.")
-        self.spreadsheet = gc.open_by_url(sheet_url)
-        self.sheet_tools = SheetTools(self.spreadsheet)
-
-        # --- LLM ---
+        self.registry = SpreadsheetRegistry(_build_gspread_client(), sheet_url)
         self.llm = ChatGoogleGenerativeAI(
             model=os.getenv("GEMINI_MODEL", "gemini-1.5-pro-latest"),
             google_api_key=os.getenv("GEMINI_API_KEY"),
             temperature=0.1,
         )
-
-        # --- Tool registry (plain callables decorated as LangChain tools) ---
-        self._lc_tools = self._build_tools()
-
-        # --- LangGraph ReAct agent ---
-        self._agent = create_react_agent(
-            model=self.llm,
-            tools=self._lc_tools,
-            prompt=SYSTEM_PROMPT,
-        )
-
-        # --- Multi-turn session memory store (Redis with 24h TTL or configured backend) ---
         self.session_store: SessionStore = session_store or get_session_store()
 
-        # --- Retrieval layer (RAG-Fusion over schema metadata) ---
-        self.schema_index = SchemaIndex()
-        self.reformulator = MultiQueryReformulator(llm=self.llm)
-        self.retriever = RAGFusionRetriever(
-            schema_index=self.schema_index,
-            reformulator=self.reformulator,
+    def _request_services(
+        self, principal_id: str, connection_id: Optional[str] = None
+    ):
+        connection, spreadsheet = self.registry.resolve(principal_id, connection_id)
+        sheet_tools = SheetTools(spreadsheet)
+        schema_index = SchemaIndex()
+        schema_index.build_from_dataframes(sheet_tools._cache)
+        retriever = RAGFusionRetriever(
+            schema_index=schema_index,
+            reformulator=MultiQueryReformulator(),
             k=60,
         )
-        self._sync_schema_index()
+        lc_tools = self._build_tools(sheet_tools)
+        graph = create_react_agent(
+            model=self.llm,
+            tools=lc_tools,
+            prompt=SYSTEM_PROMPT,
+        )
+        return connection, spreadsheet, sheet_tools, retriever, graph
 
-    def _sync_schema_index(self):
-        """Populate SchemaIndex from cached sheet DataFrames and re-fit retriever."""
-        if hasattr(self, "sheet_tools") and self.sheet_tools._cache:
-            self.schema_index.build_from_dataframes(self.sheet_tools._cache)
-            self.retriever.rebuild()
-
-    def _build_tools(self):
+    def _build_tools(self, st: SheetTools):
         """Wrap SheetTools methods as LangChain-compatible tool callables with Pydantic schemas."""
-        st = self.sheet_tools
-
         from langchain_core.tools import StructuredTool
 
         return [
@@ -878,9 +1075,9 @@ class SheetSenseAgent:
             ),
         ]
 
-    def _get_history(self, session_id: Optional[str]) -> List:
+    def _get_history(self, principal_id: str, session_id: str) -> List:
         """Return the stored message history for a session from SessionStore as LangChain messages."""
-        history = self.session_store.get_history(session_id)
+        history = self.session_store.get_history(principal_id, session_id)
         messages = []
         for turn in history:
             if turn.get("role") == "human":
@@ -889,14 +1086,19 @@ class SheetSenseAgent:
                 messages.append(AIMessage(content=turn["content"]))
         return messages
 
-    def _save_turn(self, session_id: Optional[str], human: str, ai: str):
+    def _save_turn(
+        self, principal_id: str, session_id: str, human: str, ai: str
+    ):
         """Append a completed turn to SessionStore (24h rolling TTL)."""
-        self.session_store.save_turn(session_id, human, ai)
+        self.session_store.save_turn(principal_id, session_id, human, ai)
 
     def run(
         self,
         user_message: str,
-        session_id: Optional[str] = None,
+        session_id: str,
+        principal_id: str = "legacy-admin",
+        connection_id: Optional[str] = None,
+        request_id: Optional[str] = None,
         sheet_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -914,11 +1116,19 @@ class SheetSenseAgent:
                 "intermediate_steps": [...],
             }
         """
-        # Sync schema index with any newly loaded DataFrames in sheet_tools cache
-        self._sync_schema_index()
-
-        # Retrieve top schema candidates via RAG-Fusion
-        retrieved_candidates = self.retriever.retrieve_top_k(user_message, top_k=4)
+        if not session_id or not session_id.strip():
+            raise ValueError("session_id is required.")
+        request_id = request_id or str(uuid.uuid4())
+        connection, _, sheet_tools, retriever, request_agent = self._request_services(
+            principal_id, connection_id
+        )
+        context = RequestContext(
+            principal_id=principal_id,
+            session_id=session_id,
+            connection_id=connection["connection_id"],
+            request_id=request_id,
+        )
+        retrieved_candidates = retriever.retrieve_top_k(user_message, top_k=4)
         retrieval_context = format_retrieval_context(retrieved_candidates)
 
         # Assemble prompt query with optional sheet hint and RAG-Fusion schema context
@@ -930,18 +1140,16 @@ class SheetSenseAgent:
         query_parts.append(user_message)
         query = "\n\n".join(query_parts)
 
-        # Bind session ID and reset last pending action
-        self.sheet_tools.active_session_id = session_id
-        self.sheet_tools.last_pending_action = None
-
-        # Build message list: history + new human turn
-        history = self._get_history(session_id)
-        messages = history + [HumanMessage(content=query)]
-
+        turn_lock = self.session_store.turn_lock(principal_id, session_id)
+        turn_lock.__enter__()
+        context_token = set_request_context(context)
+        pending_token = clear_pending_action()
         try:
+            history = self._get_history(principal_id, session_id)
+            messages = history + [HumanMessage(content=query)]
             from retry_handler import execute_with_retry
             result = execute_with_retry(
-                self._agent.invoke,
+                request_agent.invoke,
                 {"messages": messages},
                 config={"recursion_limit": 12},  # ~5 ReAct iterations
                 max_retries=3,
@@ -974,16 +1182,18 @@ class SheetSenseAgent:
                         intermediate.append({"tool": tc["name"], "observation": str(tc.get("args", ""))[:500]})
 
             # Persist turn to session memory
-            self._save_turn(session_id, user_message, answer)
+            self._save_turn(principal_id, session_id, user_message, answer)
 
             output = {
                 "answer": answer,
                 "tools_used": tools_used,
                 "intermediate_steps": intermediate,
                 "retrieved_schema": retrieved_candidates,
+                "connection_id": context.connection_id,
             }
-            if self.sheet_tools.last_pending_action is not None:
-                output["pending_action"] = self.sheet_tools.last_pending_action
+            pending_action = get_pending_action()
+            if pending_action is not None:
+                output["pending_action"] = pending_action
 
             return output
         except Exception as exc:
@@ -1001,33 +1211,59 @@ class SheetSenseAgent:
                 "tools_used": [],
                 "intermediate_steps": [],
             }
+        finally:
+            turn_lock.__exit__(None, None, None)
+            reset_pending_action(pending_token)
+            reset_request_context(context_token)
 
     # ---- Utility methods (used by FastAPI endpoints) ----------------------
 
-    def get_sheet_names(self) -> List[str]:
-        return [ws.title for ws in self.spreadsheet.worksheets()]
+    def resolve_spreadsheet(
+        self, principal_id: str, connection_id: Optional[str] = None
+    ):
+        return self.registry.resolve(principal_id, connection_id)
 
-    def get_sheet_schema(self, sheet_name: str) -> Optional[Dict]:
-        df = self.sheet_tools._get_df(sheet_name)
+    def get_sheet_tools(
+        self, principal_id: str, connection_id: Optional[str] = None
+    ) -> tuple[Dict[str, Any], SheetTools]:
+        connection, spreadsheet = self.registry.resolve(principal_id, connection_id)
+        return connection, SheetTools(spreadsheet)
+
+    def get_sheet_names(
+        self, principal_id: str = "legacy-admin", connection_id: Optional[str] = None
+    ) -> List[str]:
+        _, spreadsheet = self.registry.resolve(principal_id, connection_id)
+        return [ws.title for ws in spreadsheet.worksheets()]
+
+    def get_sheet_schema(
+        self,
+        sheet_name: str,
+        principal_id: str = "legacy-admin",
+        connection_id: Optional[str] = None,
+        refresh: bool = False,
+    ) -> Optional[Dict]:
+        connection, tools = self.get_sheet_tools(principal_id, connection_id)
+        df = tools._get_df(sheet_name, refresh=refresh)
         if df is None:
             return None
-        return {
+        result = {
             "sheet_name": sheet_name,
             "row_count": len(df),
             "columns": list(df.columns),
             "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+            "connection_id": connection["connection_id"],
+            "source": "google_sheets",
         }
+        result.update(tools.cache_metadata(sheet_name))
+        return result
 
-    def connect_spreadsheet(self, sheet_url: str) -> List[str]:
-        """Dynamically switch to an external Google Sheet URL and re-index tools."""
-        gc = _build_gspread_client()
-        self.spreadsheet = gc.open_by_url(sheet_url)
-        self.sheet_tools = SheetTools(self.spreadsheet)
-        self._lc_tools = self._build_tools()
-        self._agent = create_react_agent(
-            model=self.llm,
-            tools=self._lc_tools,
-            prompt=SYSTEM_PROMPT,
-        )
-        self._sync_schema_index()
-        return self.get_sheet_names()
+    def connect_spreadsheet(
+        self, principal_id: str, sheet_url: str
+    ) -> Dict[str, Any]:
+        """Register a tenant-owned connection without changing global state."""
+        connection = self.registry.register(principal_id, sheet_url)
+        names = self.get_sheet_names(principal_id, connection["connection_id"])
+        return {"connection": connection, "sheets": names}
+
+    def list_connections(self, principal_id: str) -> List[Dict[str, Any]]:
+        return self.registry.list(principal_id)

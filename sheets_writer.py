@@ -8,6 +8,8 @@
 #   to import or call this module directly.
 
 import logging
+import hashlib
+import json
 from typing import Any, Dict, Optional
 import gspread
 
@@ -19,6 +21,45 @@ class SheetsWriterError(Exception):
     pass
 
 
+class SheetsStateConflictError(SheetsWriterError):
+    """The live row no longer matches the state approved by the user."""
+
+
+def row_fingerprint(headers, row_values) -> str:
+    normalized = {
+        str(header): str(row_values[index]) if index < len(row_values) else ""
+        for index, header in enumerate(headers)
+    }
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _resolve_unique_row(ws, id_column: str, id_value: Any, headers) -> int:
+    id_col_idx = headers.index(id_column) + 1
+    matches = ws.findall(str(id_value), in_column=id_col_idx)
+    if isinstance(matches, list):
+        if len(matches) != 1:
+            raise SheetsStateConflictError(
+                "The target identifier is missing or no longer unique."
+            )
+        return matches[0].row
+    cell = ws.find(str(id_value), in_column=id_col_idx)
+    if not cell:
+        raise SheetsStateConflictError("The target row no longer exists.")
+    return cell.row
+
+
+def _verify_expected_state(ws, headers, row_idx: int, expected_state: Optional[Dict[str, Any]]) -> None:
+    if not expected_state:
+        return
+    live_values = ws.row_values(row_idx)
+    live_fingerprint = row_fingerprint(headers, live_values)
+    if live_fingerprint != expected_state.get("row_fingerprint"):
+        raise SheetsStateConflictError(
+            "The target row changed after the action was staged."
+        )
+
+
 def execute_update_cell(
     spreadsheet: gspread.Spreadsheet,
     sheet_name: str,
@@ -26,6 +67,7 @@ def execute_update_cell(
     id_value: Any,
     update_column: str,
     new_value: Any,
+    expected_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Locate a row by id_column == id_value and update the specified cell.
@@ -50,16 +92,9 @@ def execute_update_cell(
         if update_column not in headers:
             raise SheetsWriterError(f"Update column '{update_column}' not found in sheet '{sheet_name}'.")
 
-        id_col_idx = headers.index(id_column) + 1
         upd_col_idx = headers.index(update_column) + 1
-
-        cell = ws.find(str(id_value), in_column=id_col_idx)
-        if not cell:
-            raise SheetsWriterError(
-                f"Row with {id_column}='{id_value}' not found in sheet '{sheet_name}'."
-            )
-
-        row_idx = cell.row
+        row_idx = _resolve_unique_row(ws, id_column, id_value, headers)
+        _verify_expected_state(ws, headers, row_idx, expected_state)
         # Write to Google Sheets
         ws.update_cell(row_idx, upd_col_idx, new_value)
         logger.info(
@@ -89,6 +124,7 @@ def execute_delete_row(
     sheet_name: str,
     id_column: str,
     id_value: Any,
+    expected_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Locate a row by id_column == id_value and permanently delete it.
@@ -109,14 +145,8 @@ def execute_delete_row(
         if id_column not in headers:
             raise SheetsWriterError(f"ID column '{id_column}' not found in sheet '{sheet_name}'.")
 
-        id_col_idx = headers.index(id_column) + 1
-        cell = ws.find(str(id_value), in_column=id_col_idx)
-        if not cell:
-            raise SheetsWriterError(
-                f"Row with {id_column}='{id_value}' not found in sheet '{sheet_name}'."
-            )
-
-        row_idx = cell.row
+        row_idx = _resolve_unique_row(ws, id_column, id_value, headers)
+        _verify_expected_state(ws, headers, row_idx, expected_state)
         # Delete row from Google Sheets
         ws.delete_rows(row_idx)
         logger.info(f"Successfully deleted row {row_idx} from '{sheet_name}' where {id_column}='{id_value}'.")
@@ -141,6 +171,7 @@ def execute_action(
     tool_name: str,
     target: Dict[str, Any],
     proposed_change: Dict[str, Any],
+    expected_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Dispatch and execute a confirmed destructive action against Google Sheets.
@@ -172,6 +203,7 @@ def execute_action(
             id_value=id_value,
             update_column=update_column,
             new_value=new_value,
+            expected_state=expected_state,
         )
 
     elif tool_name == "delete_row":
@@ -180,6 +212,7 @@ def execute_action(
             sheet_name=sheet_name,
             id_column=id_column,
             id_value=id_value,
+            expected_state=expected_state,
         )
 
     else:

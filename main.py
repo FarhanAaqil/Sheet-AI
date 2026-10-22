@@ -9,7 +9,7 @@ import logging
 
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Header, Query
 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger(__name__)
 
 from config import Settings
-from security import SecurityHeadersMiddleware, build_auth_dependencies
+from security import APIPrincipal, SecurityHeadersMiddleware, build_auth_dependencies
 
 settings = Settings.from_env()
 _authenticator, get_api_key, require_roles = build_auth_dependencies(settings)
@@ -123,6 +123,10 @@ class ChatRequest(BaseModel):
         description="Optional session ID for conversation memory.",
         example="user-abc-123",
     )
+    connection_id: Optional[str] = Field(
+        default=None,
+        description="Tenant-owned spreadsheet connection ID. Defaults to the configured sheet.",
+    )
     sheet_name: Optional[str] = Field(
         default=None,
         description="Which worksheet to target. Defaults to the first sheet.",
@@ -131,7 +135,8 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    session_id: Optional[str]
+    session_id: str
+    connection_id: str
     tool_calls_made: list[str] = []
     raw_steps: Optional[list[Dict[str, Any]]] = None
     pending_action: Optional[Dict[str, Any]] = None
@@ -143,6 +148,10 @@ class HealthResponse(BaseModel):
 
 class ConnectSheetRequest(BaseModel):
     sheet_url: str = Field(..., description="External Google Sheets URL", example="https://docs.google.com/spreadsheets/d/...")
+
+
+class SessionResponse(BaseModel):
+    session_id: str
 
 
 # Endpoints
@@ -163,10 +172,10 @@ def liveness():
 @app.get("/health/ready", tags=["Meta"])
 def readiness(
     agent: SheetSenseAgent = Depends(get_agent),
-    _key=Depends(get_api_key),
+    principal: APIPrincipal = Depends(get_api_key),
 ):
     try:
-        sheet_names = agent.get_sheet_names()
+        sheet_names = agent.get_sheet_names(principal.principal_id)
         store = getattr(agent, "session_store", None)
         redis_client = getattr(store, "client", None)
         if redis_client is not None:
@@ -189,11 +198,11 @@ def readiness(
 @app.get("/health", response_model=HealthResponse, tags=["Meta"])
 def health(
     agent: SheetSenseAgent = Depends(get_agent),
-    _key=Depends(get_api_key),
+    principal: APIPrincipal = Depends(get_api_key),
     _rate_limit=Depends(rate_limit(60, 60, "health")),
 ):
     """Returns service health and Google Sheets connection status."""
-    sheet_names = agent.get_sheet_names()
+    sheet_names = agent.get_sheet_names(principal.principal_id)
     return HealthResponse(
         status="ok",
         sheets_connected=len(sheet_names) > 0,
@@ -205,7 +214,7 @@ def health(
 def chat(
     request: ChatRequest,
     _rate_limit: bool = Depends(rate_limit(max_requests=60, window_seconds=60, endpoint_group="chat")),
-    _key=Depends(require_roles("viewer", "editor", "approver", "admin")),
+    principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     agent: SheetSenseAgent = Depends(get_agent),
 ):
     """
@@ -223,14 +232,27 @@ def chat(
         bool(request.session_id),
         len(request.message),
     )
-    result = agent.run(
-        user_message=request.message,
-        session_id=request.session_id,
-        sheet_name=request.sheet_name,
+    session_id = request.session_id or agent.session_store.create_session(
+        principal.principal_id
     )
+    try:
+        result = agent.run(
+            user_message=request.message,
+            session_id=session_id,
+            principal_id=principal.principal_id,
+            connection_id=request.connection_id,
+            request_id=str(uuid.uuid4()),
+            sheet_name=request.sheet_name,
+        )
+    except PermissionError:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "CONNECTION_NOT_FOUND", "message": "Spreadsheet connection not found."},
+        ) from None
     return ChatResponse(
         answer=str(result["answer"]),
-        session_id=request.session_id,
+        session_id=session_id,
+        connection_id=str(result.get("connection_id") or request.connection_id or "default"),
         tool_calls_made=result.get("tools_used", []),
         raw_steps=result.get("intermediate_steps"),
         pending_action=result.get("pending_action"),
@@ -240,23 +262,34 @@ def chat(
 
 @app.get("/sheets", tags=["Agent"])
 def list_sheets(
+    connection_id: Optional[str] = Query(default=None),
     agent: SheetSenseAgent = Depends(get_agent),
-    _key=Depends(require_roles("viewer", "editor", "approver", "admin")),
+    principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     _rate_limit=Depends(rate_limit(60, 60, "sheets")),
 ):
     """Returns all worksheet names in the connected spreadsheet."""
-    return {"sheets": agent.get_sheet_names()}
+    return {
+        "connection_id": connection_id,
+        "sheets": agent.get_sheet_names(principal.principal_id, connection_id),
+    }
 
 
 @app.get("/sheets/{sheet_name}/schema", tags=["Agent"])
 def sheet_schema(
     sheet_name: str,
+    connection_id: Optional[str] = Query(default=None),
+    refresh: bool = Query(default=False),
     agent: SheetSenseAgent = Depends(get_agent),
-    _key=Depends(require_roles("viewer", "editor", "approver", "admin")),
+    principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     _rate_limit=Depends(rate_limit(60, 60, "sheets")),
 ):
     """Returns column names and row count for a specific worksheet."""
-    schema = agent.get_sheet_schema(sheet_name)
+    schema = agent.get_sheet_schema(
+        sheet_name,
+        principal.principal_id,
+        connection_id,
+        refresh=refresh,
+    )
     if not schema:
         raise HTTPException(status_code=404, detail=f"Sheet '{sheet_name}' not found.")
     return schema
@@ -266,13 +299,13 @@ def sheet_schema(
 def connect_sheet(
     request: ConnectSheetRequest,
     agent: SheetSenseAgent = Depends(get_agent),
-    _key=Depends(require_roles("admin")),
+    principal: APIPrincipal = Depends(require_roles("admin")),
     _rate_limit=Depends(rate_limit(10, 60, "connect")),
 ):
     """Dynamically connects the agent to an external Google Sheet URL."""
     try:
-        sheets = agent.connect_spreadsheet(request.sheet_url)
-        return {"status": "connected", "sheet_url": request.sheet_url, "sheets": sheets}
+        result = agent.connect_spreadsheet(principal.principal_id, request.sheet_url)
+        return {"status": "connected", **result}
     except Exception as exc:
         error_id = str(uuid.uuid4())[:8]
         logger.error(
@@ -293,22 +326,103 @@ def connect_sheet(
 @app.get("/sheets/{sheet_name}/data", tags=["Agent"])
 def get_sheet_data(
     sheet_name: str,
-    limit: int = 150,
+    connection_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    refresh: bool = Query(default=False),
     agent: SheetSenseAgent = Depends(get_agent),
-    _key=Depends(require_roles("viewer", "editor", "approver", "admin")),
+    principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     _rate_limit=Depends(rate_limit(60, 60, "sheets")),
 ):
     """Returns row records and columns for a worksheet."""
-    df = agent.sheet_tools._get_df(sheet_name)
+    connection, tools = agent.get_sheet_tools(principal.principal_id, connection_id)
+    df = tools._get_df(sheet_name, refresh=refresh)
     if df is None:
         raise HTTPException(status_code=404, detail=f"Sheet '{sheet_name}' not found.")
-    data = df.head(limit).fillna("").to_dict(orient="records")
-    return {
+    page = df.iloc[offset : offset + limit]
+    data = json.loads(page.to_json(orient="records", date_format="iso"))
+    next_offset = offset + len(page) if offset + len(page) < len(df) else None
+    response = {
         "sheet_name": sheet_name,
+        "connection_id": connection["connection_id"],
         "total_rows": len(df),
         "columns": list(df.columns),
         "data": data,
+        "offset": offset,
+        "limit": limit,
+        "returned_rows": len(page),
+        "truncated": next_offset is not None,
+        "next_offset": next_offset,
+        "source": "google_sheets",
     }
+    response.update(tools.cache_metadata(sheet_name))
+    return response
+
+
+@app.get("/connections", tags=["Agent"])
+def list_connections(
+    agent: SheetSenseAgent = Depends(get_agent),
+    principal: APIPrincipal = Depends(
+        require_roles("viewer", "editor", "approver", "admin")
+    ),
+    _rate_limit=Depends(rate_limit(60, 60, "connections")),
+):
+    """List only spreadsheet connections owned by the authenticated principal."""
+    return {"connections": agent.list_connections(principal.principal_id)}
+
+
+@app.post("/sessions", response_model=SessionResponse, tags=["Sessions"])
+def create_session(
+    agent: SheetSenseAgent = Depends(get_agent),
+    principal: APIPrincipal = Depends(
+        require_roles("viewer", "editor", "approver", "admin")
+    ),
+    _rate_limit=Depends(rate_limit(30, 60, "sessions")),
+):
+    return SessionResponse(
+        session_id=agent.session_store.create_session(principal.principal_id)
+    )
+
+
+@app.get("/sessions", tags=["Sessions"])
+def list_sessions(
+    agent: SheetSenseAgent = Depends(get_agent),
+    principal: APIPrincipal = Depends(
+        require_roles("viewer", "editor", "approver", "admin")
+    ),
+    _rate_limit=Depends(rate_limit(60, 60, "sessions")),
+):
+    return {"sessions": agent.session_store.list_sessions(principal.principal_id)}
+
+
+@app.post("/sessions/{session_id}/clear", tags=["Sessions"])
+def clear_session(
+    session_id: str,
+    agent: SheetSenseAgent = Depends(get_agent),
+    principal: APIPrincipal = Depends(
+        require_roles("viewer", "editor", "approver", "admin")
+    ),
+    _rate_limit=Depends(rate_limit(30, 60, "sessions")),
+):
+    if session_id not in agent.session_store.list_sessions(principal.principal_id):
+        raise HTTPException(status_code=404, detail="Session not found.")
+    agent.session_store.clear_history(principal.principal_id, session_id)
+    return {"status": "cleared", "session_id": session_id}
+
+
+@app.delete("/sessions/{session_id}", tags=["Sessions"])
+def delete_session(
+    session_id: str,
+    agent: SheetSenseAgent = Depends(get_agent),
+    principal: APIPrincipal = Depends(
+        require_roles("viewer", "editor", "approver", "admin")
+    ),
+    _rate_limit=Depends(rate_limit(30, 60, "sessions")),
+):
+    if session_id not in agent.session_store.list_sessions(principal.principal_id):
+        raise HTTPException(status_code=404, detail="Session not found.")
+    agent.session_store.clear_session(principal.principal_id, session_id)
+    return {"status": "deleted", "session_id": session_id}
 
 
 
@@ -326,6 +440,132 @@ class ConfirmActionResponse(BaseModel):
     executed_at: str
 
 
+def _execute_confirmed_action(
+    action_id: str,
+    idempotency_key: str,
+    principal: APIPrincipal,
+    agent: SheetSenseAgent,
+) -> ConfirmActionResponse:
+    claim = database.claim_pending_action(
+        action_id=action_id,
+        principal_id=principal.principal_id,
+        idempotency_key=idempotency_key,
+    )
+    outcome = claim.get("claim_status")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Action not found.")
+    if outcome == "forbidden":
+        raise HTTPException(status_code=404, detail="Action not found.")
+    if outcome == "expired":
+        raise HTTPException(status_code=410, detail="Action has expired.")
+    if outcome == "rejected":
+        raise HTTPException(status_code=410, detail="Action was rejected.")
+    if outcome == "already_confirmed":
+        raise HTTPException(status_code=410, detail="Action has already been confirmed.")
+    if outcome in {"in_progress", "idempotency_conflict"}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ACTION_IN_PROGRESS",
+                "message": "This action or idempotency key is already in use.",
+            },
+        )
+    if outcome == "failed":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": claim.get("failure_code") or "ACTION_FAILED",
+                "message": "The prior execution failed and will not be retried automatically.",
+            },
+        )
+    if outcome == "idempotent_replay":
+        result = json.loads(claim.get("result_json") or "{}")
+        return ConfirmActionResponse(
+            status="confirmed",
+            action_id=action_id,
+            tool_name=claim["tool_name"],
+            result=result,
+            executed_at=claim.get("executed_at") or datetime.now(timezone.utc).isoformat(),
+        )
+    if outcome != "claimed":
+        raise HTTPException(status_code=409, detail="Action could not be claimed.")
+
+    start_time = time.time()
+    try:
+        target = json.loads(claim["target_json"])
+        proposed_change = json.loads(claim["proposed_change_json"])
+        expected_state = json.loads(claim["expected_state_json"]) if claim.get("expected_state_json") else None
+        connection_id = claim.get("connection_id")
+        if connection_id == "default":
+            connection_id = None
+        _, spreadsheet = agent.resolve_spreadsheet(
+            principal.principal_id, connection_id
+        )
+        write_result = sheets_writer.execute_action(
+            spreadsheet=spreadsheet,
+            tool_name=claim["tool_name"],
+            target=target,
+            proposed_change=proposed_change,
+            expected_state=expected_state,
+        )
+        if not database.complete_action(action_id, write_result):
+            raise RuntimeError("Action state changed before completion.")
+        latency_ms = int((time.time() - start_time) * 1000)
+        database.log_tool_call(
+            tool_name=claim["tool_name"],
+            input_data={"target": target, "proposed_change": proposed_change},
+            output_data=write_result,
+            success=True,
+            latency_ms=latency_ms,
+            session_id=claim.get("session_id"),
+        )
+        return ConfirmActionResponse(
+            status="confirmed",
+            action_id=action_id,
+            tool_name=claim["tool_name"],
+            result=write_result,
+            executed_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except sheets_writer.SheetsStateConflictError:
+        database.fail_action(action_id, "PRECONDITION_FAILED")
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "TARGET_CHANGED",
+                "message": "The target changed after approval was requested.",
+            },
+        ) from None
+    except Exception as exc:
+        error_id = str(uuid.uuid4())[:8]
+        database.fail_action(
+            action_id,
+            "WRITE_STATE_UNKNOWN",
+            {"error_id": error_id},
+        )
+        database.log_tool_call(
+            tool_name=claim.get("tool_name", "unknown"),
+            input_data=claim.get("target_json"),
+            output_data={"error_id": error_id, "code": "WRITE_STATE_UNKNOWN"},
+            success=False,
+            latency_ms=int((time.time() - start_time) * 1000),
+            session_id=claim.get("session_id"),
+        )
+        logger.error(
+            "Confirmed action failed: error_id=%s action_id=%s exception_type=%s",
+            error_id,
+            action_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "WRITE_STATE_UNKNOWN",
+                "message": "The write outcome could not be verified; manual review is required.",
+                "error_id": error_id,
+            },
+        ) from None
+
+
 @app.post(
     "/actions/{action_id}/confirm",
     response_model=ConfirmActionResponse,
@@ -333,8 +573,9 @@ class ConfirmActionResponse(BaseModel):
 )
 def confirm_action(
     action_id: str,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     _rate_limit: bool = Depends(rate_limit(max_requests=20, window_seconds=60, endpoint_group="confirm")),
-    _key=Depends(require_roles("approver", "admin")),
+    principal: APIPrincipal = Depends(require_roles("approver", "admin")),
     agent: SheetSenseAgent = Depends(get_agent),
 ):
 
@@ -346,127 +587,29 @@ def confirm_action(
     2. Calls isolated sheets_writer to execute the write/delete.
     3. Updates action status to 'confirmed' and writes an audit log to tool_calls.
     """
-    action = database.get_pending_action(action_id)
-    if not action:
-        raise HTTPException(status_code=404, detail=f"Action '{action_id}' not found.")
-
-    current_status = action["status"]
-    if current_status == "confirmed":
-        raise HTTPException(
-            status_code=410,
-            detail=f"Action '{action_id}' has already been confirmed and executed.",
-        )
-    if current_status == "rejected":
-        raise HTTPException(
-            status_code=410,
-            detail=f"Action '{action_id}' was previously rejected.",
-        )
-    if current_status != "pending":
-        raise HTTPException(
-            status_code=410,
-            detail=f"Action '{action_id}' is no longer pending (current status: '{current_status}').",
-        )
-
-    # Validate 5-minute TTL expiration
-    expires_at_str = action["expires_at"]
-    try:
-        expires_at = datetime.fromisoformat(expires_at_str)
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) > expires_at:
-            database.update_action_status(action_id, "expired")
-            raise HTTPException(
-                status_code=410,
-                detail=f"Action '{action_id}' has expired. Destructive actions must be confirmed within 5 minutes.",
-            )
-    except ValueError:
-        logger.error("Invalid pending-action expiration timestamp: action_id=%s", action_id)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid expiration timestamp on action '{action_id}'.",
-        )
-
-    # Execute the write operation through sheets_writer
-    start_time = time.time()
-    try:
-        target = json.loads(action["target_json"])
-        proposed_change = json.loads(action["proposed_change_json"])
-        tool_name = action["tool_name"]
-
-        write_result = sheets_writer.execute_action(
-            spreadsheet=agent.spreadsheet,
-            tool_name=tool_name,
-            target=target,
-            proposed_change=proposed_change,
-        )
-        latency_ms = int((time.time() - start_time) * 1000)
-
-        # Update action status and write audit log
-        database.update_action_status(action_id, "confirmed")
-        database.log_tool_call(
-            tool_name=tool_name,
-            input_data={"target": target, "proposed_change": proposed_change},
-            output_data=write_result,
-            success=True,
-            latency_ms=latency_ms,
-            session_id=action.get("session_id"),
-        )
-
-        # Refresh in-memory DataFrame cache for target sheet
-        sheet_name = target.get("sheet_name")
-        if sheet_name:
-            agent.sheet_tools._refresh_sheet(sheet_name)
-
-        return ConfirmActionResponse(
-            status="confirmed",
-            action_id=action_id,
-            tool_name=tool_name,
-            result=write_result,
-            executed_at=datetime.now(timezone.utc).isoformat(),
-        )
-    except Exception as exc:
-        latency_ms = int((time.time() - start_time) * 1000)
-        error_id = str(uuid.uuid4())[:8]
-        database.log_tool_call(
-            tool_name=action.get("tool_name", "unknown"),
-            input_data=action.get("target_json"),
-            output_data={"error_id": error_id, "code": "WRITE_FAILED"},
-            success=False,
-            latency_ms=latency_ms,
-            session_id=action.get("session_id"),
-        )
-        logger.error(
-            "Confirmed action failed: error_id=%s action_id=%s exception_type=%s",
-            error_id,
-            action_id,
-            type(exc).__name__,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "code": "WRITE_FAILED",
-                "message": "The confirmed write could not be completed.",
-                "error_id": error_id,
-            },
-        ) from None
+    return _execute_confirmed_action(
+        action_id=action_id,
+        idempotency_key=idempotency_key or f"action:{action_id}",
+        principal=principal,
+        agent=agent,
+    )
 
 
 @app.post("/actions/{action_id}/reject", tags=["Safety Guardrail"])
 def reject_action(
     action_id: str,
-    _key=Depends(require_roles("approver", "admin")),
+    principal: APIPrincipal = Depends(require_roles("approver", "admin")),
     _rate_limit=Depends(rate_limit(20, 60, "confirm")),
 ):
     """Cancel / reject a pending destructive action."""
-    action = database.get_pending_action(action_id)
-    if not action:
-        raise HTTPException(status_code=404, detail=f"Action '{action_id}' not found.")
-    if action["status"] != "pending":
+    outcome = database.reject_pending_action(action_id, principal.principal_id)
+    if outcome in {"not_found", "forbidden"}:
+        raise HTTPException(status_code=404, detail="Action not found.")
+    if outcome != "rejected":
         raise HTTPException(
-            status_code=400,
-            detail=f"Cannot reject action '{action_id}' in state '{action['status']}'.",
+            status_code=409 if outcome in {"executing", "conflict"} else 410,
+            detail=f"Action cannot be rejected in state '{outcome}'.",
         )
-    database.update_action_status(action_id, "rejected")
     return {"status": "rejected", "action_id": action_id}
 
 

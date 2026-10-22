@@ -73,17 +73,18 @@ def test_e2e_chat_read_flow(client):
 
 def test_e2e_destructive_confirmation_lifecycle(client, monkeypatch):
     """Verify end-to-end confirmation gate: staging -> confirm -> execute -> replay block."""
-    mock_writer = MagicMock()
-    mock_writer.execute_action.return_value = {
+    write_result = {
         "updated": True,
         "sheet": "Orders",
         "row": 5,
         "col": 4,
         "new_value": 89.99,
     }
-    monkeypatch.setattr("main.sheets_writer", mock_writer)
+    mock_execute = MagicMock(return_value=write_result)
+    monkeypatch.setattr("main.sheets_writer.execute_action", mock_execute)
 
     mock_agent = MagicMock()
+    mock_agent.resolve_spreadsheet.return_value = ("default", MagicMock())
     app.dependency_overrides[get_agent] = lambda: mock_agent
 
     action_id = str(uuid.uuid4())
@@ -107,13 +108,14 @@ def test_e2e_destructive_confirmation_lifecycle(client, monkeypatch):
         assert body["action_id"] == action_id
         assert body["result"]["updated"] is True
 
-        # Step 2: Replay attack block (action already confirmed)
+        # Step 2: idempotent replay returns the recorded result without another write
         replay_resp = client.post(
             f"/actions/{action_id}/confirm",
             headers={"X-API-Key": "dev-key-123"},
         )
-        assert replay_resp.status_code == 410
-        assert "already been confirmed" in replay_resp.json()["detail"]
+        assert replay_resp.status_code == 200
+        assert replay_resp.json()["result"] == write_result
+        assert mock_execute.call_count == 1
     finally:
         app.dependency_overrides.pop(get_agent, None)
 
@@ -131,5 +133,3 @@ def test_e2e_eval_run_endpoint(client):
     assert summary["cga"] == 100.0
     assert summary["ibr"] == 100.0
     assert "run_id" in summary
-
-

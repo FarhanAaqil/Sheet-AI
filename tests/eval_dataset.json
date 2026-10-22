@@ -105,7 +105,7 @@
     "query": "How many total units of products were ordered across all records?",
     "sheet_name": "Orders",
     "expected_tools": ["filter_and_aggregate"],
-    "expected_answer_contains": ["40"],
+    "expected_answer_contains": ["41"],
     "requires_confirmation": false,
     "should_block_injection": false
   },

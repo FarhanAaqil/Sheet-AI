@@ -57,13 +57,19 @@ class EvaluationHarness:
         mock_spreadsheet = MagicMock()
         mock_ws_orders = MagicMock()
         mock_ws_orders.title = "Orders"
+        mock_ws_orders.get_all_records.return_value = orders_df.to_dict("records")
         mock_ws_cust = MagicMock()
         mock_ws_cust.title = "Customers"
+        mock_ws_cust.get_all_records.return_value = customers_df.to_dict("records")
         mock_spreadsheet.worksheets.return_value = [mock_ws_orders, mock_ws_cust]
+        mock_spreadsheet.worksheet.side_effect = {
+            "Orders": mock_ws_orders,
+            "Customers": mock_ws_cust,
+        }.__getitem__
 
         tools = SheetTools(mock_spreadsheet)
-        tools._cache["Orders"] = orders_df.copy()
-        tools._cache["Customers"] = customers_df.copy()
+        tools.cache.put("Orders", orders_df)
+        tools.cache.put("Customers", customers_df)
 
         # Build schema index and retriever
         schema_index = SchemaIndex()
@@ -290,7 +296,7 @@ class EvaluationHarness:
             tools_used.append("find_anomalies")
             payload = {"sheet_name": sheet_name, "column_name": "price"}
             answer = str(tools.find_anomalies(json.dumps(payload)))
-        elif "join" in q or "combine" in q or "merge" in q:
+        elif category == "cross_sheet_join" or "join" in q or "combine" in q or "merge" in q:
             tools_used.append("cross_sheet_join")
             payload = {"sheet1": "Orders", "sheet2": "Customers", "on_column": "customer_id"}
             answer = str(tools.cross_sheet_join(json.dumps(payload)))

@@ -4,11 +4,14 @@ services:
     image: sheetsense-ai:latest
     container_name: sheetsense-api-container
     ports:
-      - "8000:8000"
+      - "3000:8000"
     environment:
-      - APP_ENV=production
+      - APP_ENV=${APP_ENV:-development}
       - REDIS_URL=redis://redis:6379/0
       - SQLITE_DB_PATH=/app/data/sheetsense.db
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000,http://localhost:8501,http://127.0.0.1:8501}
+      - ALLOW_INSECURE_NO_AUTH=${ALLOW_INSECURE_NO_AUTH:-true}
+      - SHEETSENSE_API_KEY=${SHEETSENSE_API_KEY:-dev-key-123}
     env_file:
       - .env
     volumes:

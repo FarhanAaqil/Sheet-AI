@@ -31,6 +31,7 @@ class MultiQueryReformulator:
 
     def __init__(self, llm: Optional[Any] = None):
         self.llm = llm
+        self._cache: Dict[str, List[str]] = {}
 
     def reformulate(self, query: str) -> List[str]:
         """Generate 3 distinct reformulations for the user query."""
@@ -38,6 +39,9 @@ class MultiQueryReformulator:
             return ["", "", ""]
 
         clean_query = query.strip()
+        cache_key = clean_query.casefold()
+        if cache_key in self._cache:
+            return list(self._cache[cache_key])
 
         # If LLM is provided, attempt LLM-based reformulation
         if self.llm is not None:
@@ -58,7 +62,8 @@ class MultiQueryReformulator:
                     if isinstance(parsed, list) and len(parsed) >= 3:
                         variants = [str(p).strip() for p in parsed[:3]]
                         if len(set(variants)) == 3:
-                            return variants
+                            self._cache[cache_key] = variants
+                            return list(variants)
             except Exception as exc:
                 logger.warning(
                     "LLM reformulation failed; using fallback: exception_type=%s",
@@ -66,7 +71,9 @@ class MultiQueryReformulator:
                 )
 
         # Deterministic fallback reformulation
-        return self._deterministic_reformulate(clean_query)
+        variants = self._deterministic_reformulate(clean_query)
+        self._cache[cache_key] = variants
+        return list(variants)
 
     def _deterministic_reformulate(self, query: str) -> List[str]:
         """Deterministic 3-variant generation when LLM is unavailable."""
@@ -131,6 +138,7 @@ class ColumnMetadata:
     sample_values: List[Any]
     description: str
     searchable_text: str
+    sensitive: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -189,6 +197,14 @@ class SchemaIndex:
             for col in df.columns:
                 col_str = str(col)
                 dtype_str = str(df[col].dtype)
+                normalized_name = col_str.lower().replace("-", "_").replace(" ", "_")
+                sensitive = any(
+                    marker in normalized_name
+                    for marker in (
+                        "email", "phone", "password", "secret", "token",
+                        "api_key", "private_key", "ssn", "social_security",
+                    )
+                )
 
                 # Extract up to 5 non-null distinct sample values
                 try:
@@ -198,6 +214,8 @@ class SchemaIndex:
                     ]
                 except Exception:
                     sample_vals = list(df[col].dropna().iloc[:5])
+                if sensitive:
+                    sample_vals = []
 
                 # Determine semantic description
                 desc = (
@@ -222,6 +240,7 @@ class SchemaIndex:
                     sample_values=sample_vals,
                     description=desc,
                     searchable_text=searchable_text,
+                    sensitive=sensitive,
                 )
                 self.entries.append(meta)
                 sheet_entries.append(meta)
@@ -303,7 +322,9 @@ class RAGFusionRetriever:
         variants = self.reformulator.reformulate(query)
 
         # 2. Score and rank per variant
-        rrf_scores: Dict[int, float] = {idx: 0.0 for idx in range(len(entries))}
+        rrf_scores: Dict[int, float] = {}
+        max_similarities: Dict[int, float] = {}
+        minimum_similarity = 0.05
 
         for variant in variants:
             if not variant.strip():
@@ -315,8 +336,15 @@ class RAGFusionRetriever:
                 # Rank indices by descending similarity
                 ranked_indices = np.argsort(-sims)
                 for rank, idx in enumerate(ranked_indices):
-                    # Reciprocal Rank Fusion: 1 / (k + rank)
-                    rrf_scores[idx] += 1.0 / (self.k + rank)
+                    similarity = float(sims[idx])
+                    if similarity < minimum_similarity:
+                        continue
+                    rrf_scores[idx] = rrf_scores.get(idx, 0.0) + 1.0 / (
+                        self.k + rank
+                    )
+                    max_similarities[idx] = max(
+                        max_similarities.get(idx, 0.0), similarity
+                    )
             except Exception as exc:
                 logger.warning(
                     "Similarity computation failed: exception_type=%s",
@@ -324,7 +352,11 @@ class RAGFusionRetriever:
                 )
 
         # 3. Sort by cumulative RRF score
-        sorted_indices = sorted(rrf_scores.keys(), key=lambda i: rrf_scores[i], reverse=True)
+        sorted_indices = sorted(
+            rrf_scores.keys(),
+            key=lambda i: (rrf_scores[i], max_similarities.get(i, 0.0)),
+            reverse=True,
+        )
         top_indices = sorted_indices[:top_k]
 
         results = []
@@ -332,6 +364,7 @@ class RAGFusionRetriever:
             entry = entries[idx]
             item = entry.to_dict()
             item["rrf_score"] = round(rrf_scores[idx], 5)
+            item["similarity_score"] = round(max_similarities[idx], 5)
             results.append(item)
 
         return results
@@ -347,10 +380,12 @@ def format_retrieval_context(candidates: List[Dict[str, Any]]) -> str:
         "The following columns and sheets appear most relevant to your query:",
     ]
     for c in candidates:
-        samples_str = ", ".join(str(s) for s in c.get("sample_values", [])[:4])
+        samples = [] if c.get("sensitive") else c.get("sample_values", [])[:4]
+        samples_str = ", ".join(str(s) for s in samples)
+        sample_suffix = f" (Sample values: [{samples_str}])" if samples else ""
         lines.append(
             f"- Sheet '{c['sheet_name']}' -> Column '{c['column_name']}' ({c['dtype']}): "
-            f"{c['description']} (Sample values: [{samples_str}])"
+            f"{c['description']}{sample_suffix}"
         )
     lines.append("Use these hints as helpful context to select the right sheets and columns.")
     return "\n".join(lines)

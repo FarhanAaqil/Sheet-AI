@@ -6,8 +6,11 @@
 import os
 import json
 import logging
+import secrets
+from contextlib import contextmanager
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from threading import RLock
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -19,25 +22,45 @@ class SessionStore(ABC):
     """Abstract interface for session message history storage."""
 
     @abstractmethod
-    def get_history(self, session_id: Optional[str]) -> List[Dict[str, str]]:
+    def get_history(self, principal_id: str, session_id: str) -> List[Dict[str, str]]:
         """Retrieve the last turns as a list of {'role': 'human'|'ai', 'content': str}."""
         pass
 
     @abstractmethod
-    def save_turn(self, session_id: Optional[str], human: str, ai: str) -> None:
+    def save_turn(
+        self, principal_id: str, session_id: str, human: str, ai: str
+    ) -> None:
         """Append a completed turn and reset the rolling 24h TTL."""
         pass
 
     @abstractmethod
-    def clear_session(self, session_id: Optional[str]) -> None:
-        """Clear history for a specific session."""
+    def clear_session(self, principal_id: str, session_id: str) -> None:
+        """Delete a specific session and its history."""
         pass
+
+    @abstractmethod
+    def clear_history(self, principal_id: str, session_id: str) -> None:
+        """Clear messages while retaining the session."""
+        pass
+
+    def create_session(self, principal_id: str) -> str:
+        session_id = secrets.token_urlsafe(24)
+        self.clear_session(principal_id, session_id)
+        return session_id
+
+    @abstractmethod
+    def list_sessions(self, principal_id: str) -> List[str]:
+        pass
+
+    @contextmanager
+    def turn_lock(self, principal_id: str, session_id: str):
+        yield
 
 
 class RedisSessionStore(SessionStore):
     """
     Production-grade Redis-backed session store.
-    Key format: session:{session_id} -> JSON string list
+    Key format: session:{principal_id}:{session_id} -> JSON string list
     """
 
     def __init__(self, redis_url: str, ttl_seconds: int = SESSION_TTL_SECONDS):
@@ -47,14 +70,18 @@ class RedisSessionStore(SessionStore):
         self.client = redis.from_url(redis_url, decode_responses=True)
         # Test connection immediately
         self.client.ping()
-        logger.info(f"RedisSessionStore connected successfully to '{redis_url}'.")
+        logger.info("RedisSessionStore connected successfully.")
 
-    def _key(self, session_id: Optional[str]) -> str:
-        sid = session_id.strip() if session_id and session_id.strip() else "__default__"
-        return f"session:{sid}"
+    def _key(self, principal_id: str, session_id: str) -> str:
+        if not principal_id.strip() or not session_id.strip():
+            raise ValueError("principal_id and session_id are required.")
+        return f"session:{principal_id}:{session_id}"
 
-    def get_history(self, session_id: Optional[str]) -> List[Dict[str, str]]:
-        key = self._key(session_id)
+    def _index_key(self, principal_id: str) -> str:
+        return f"sessions:{principal_id}"
+
+    def get_history(self, principal_id: str, session_id: str) -> List[Dict[str, str]]:
+        key = self._key(principal_id, session_id)
         raw = self.client.get(key)
         if not raw:
             return []
@@ -70,18 +97,68 @@ class RedisSessionStore(SessionStore):
             )
             return []
 
-    def save_turn(self, session_id: Optional[str], human: str, ai: str) -> None:
-        key = self._key(session_id)
-        history = self.get_history(session_id)
-        history.append({"role": "human", "content": human})
-        history.append({"role": "ai", "content": ai})
-        # Keep only the last 10 turns (20 messages)
-        trimmed = history[- (MAX_TURNS * 2):]
-        self.client.set(key, json.dumps(trimmed), ex=self.ttl_seconds)
+    def save_turn(
+        self, principal_id: str, session_id: str, human: str, ai: str
+    ) -> None:
+        key = self._key(principal_id, session_id)
+        script = """
+        local raw = redis.call('GET', KEYS[1])
+        local history = {}
+        if raw then history = cjson.decode(raw) end
+        table.insert(history, {role='human', content=ARGV[1]})
+        table.insert(history, {role='ai', content=ARGV[2]})
+        while #history > tonumber(ARGV[3]) do table.remove(history, 1) end
+        redis.call('SET', KEYS[1], cjson.encode(history), 'EX', ARGV[4])
+        redis.call('SADD', KEYS[2], ARGV[5])
+        redis.call('EXPIRE', KEYS[2], ARGV[4])
+        return #history
+        """
+        self.client.eval(
+            script,
+            2,
+            key,
+            self._index_key(principal_id),
+            human,
+            ai,
+            MAX_TURNS * 2,
+            self.ttl_seconds,
+            session_id,
+        )
 
-    def clear_session(self, session_id: Optional[str]) -> None:
-        key = self._key(session_id)
-        self.client.delete(key)
+    def clear_session(self, principal_id: str, session_id: str) -> None:
+        key = self._key(principal_id, session_id)
+        pipe = self.client.pipeline(transaction=True)
+        pipe.delete(key)
+        pipe.srem(self._index_key(principal_id), session_id)
+        pipe.execute()
+
+    def clear_history(self, principal_id: str, session_id: str) -> None:
+        self.client.delete(self._key(principal_id, session_id))
+        self.client.sadd(self._index_key(principal_id), session_id)
+        self.client.expire(self._index_key(principal_id), self.ttl_seconds)
+
+    def create_session(self, principal_id: str) -> str:
+        session_id = secrets.token_urlsafe(24)
+        self.client.sadd(self._index_key(principal_id), session_id)
+        self.client.expire(self._index_key(principal_id), self.ttl_seconds)
+        return session_id
+
+    def list_sessions(self, principal_id: str) -> List[str]:
+        return sorted(self.client.smembers(self._index_key(principal_id)))
+
+    @contextmanager
+    def turn_lock(self, principal_id: str, session_id: str):
+        lock = self.client.lock(
+            f"session-lock:{principal_id}:{session_id}",
+            timeout=60,
+            blocking_timeout=10,
+        )
+        if not lock.acquire(blocking=True):
+            raise TimeoutError("The session is busy.")
+        try:
+            yield
+        finally:
+            lock.release()
 
 
 class InMemorySessionStore(SessionStore):
@@ -92,29 +169,66 @@ class InMemorySessionStore(SessionStore):
 
     def __init__(self):
         self._store: Dict[str, List[Dict[str, str]]] = {}
+        self._sessions: Dict[str, set[str]] = {}
+        self._locks: Dict[str, RLock] = {}
+        self._guard = RLock()
         logger.warning(
             "InMemorySessionStore active (ENV=local_no_redis). "
             "Note: In-memory session store does NOT support multi-worker synchronization."
         )
 
-    def _key(self, session_id: Optional[str]) -> str:
-        return session_id.strip() if session_id and session_id.strip() else "__default__"
+    def _key(self, principal_id: str, session_id: str) -> str:
+        if not principal_id.strip() or not session_id.strip():
+            raise ValueError("principal_id and session_id are required.")
+        return f"{principal_id}:{session_id}"
 
-    def get_history(self, session_id: Optional[str]) -> List[Dict[str, str]]:
-        key = self._key(session_id)
-        return self._store.get(key, [])[- (MAX_TURNS * 2):]
+    def get_history(self, principal_id: str, session_id: str) -> List[Dict[str, str]]:
+        key = self._key(principal_id, session_id)
+        with self._guard:
+            return list(self._store.get(key, [])[- (MAX_TURNS * 2):])
 
-    def save_turn(self, session_id: Optional[str], human: str, ai: str) -> None:
-        key = self._key(session_id)
-        if key not in self._store:
-            self._store[key] = []
-        self._store[key].append({"role": "human", "content": human})
-        self._store[key].append({"role": "ai", "content": ai})
-        self._store[key] = self._store[key][- (MAX_TURNS * 2):]
+    def save_turn(
+        self, principal_id: str, session_id: str, human: str, ai: str
+    ) -> None:
+        key = self._key(principal_id, session_id)
+        with self._guard:
+            history = self._store.setdefault(key, [])
+            history.extend([
+                {"role": "human", "content": human},
+                {"role": "ai", "content": ai},
+            ])
+            self._store[key] = history[- (MAX_TURNS * 2):]
+            self._sessions.setdefault(principal_id, set()).add(session_id)
 
-    def clear_session(self, session_id: Optional[str]) -> None:
-        key = self._key(session_id)
-        self._store.pop(key, None)
+    def clear_session(self, principal_id: str, session_id: str) -> None:
+        key = self._key(principal_id, session_id)
+        with self._guard:
+            self._store.pop(key, None)
+            self._sessions.setdefault(principal_id, set()).discard(session_id)
+
+    def clear_history(self, principal_id: str, session_id: str) -> None:
+        key = self._key(principal_id, session_id)
+        with self._guard:
+            self._store.pop(key, None)
+            self._sessions.setdefault(principal_id, set()).add(session_id)
+
+    def create_session(self, principal_id: str) -> str:
+        session_id = secrets.token_urlsafe(24)
+        with self._guard:
+            self._sessions.setdefault(principal_id, set()).add(session_id)
+        return session_id
+
+    def list_sessions(self, principal_id: str) -> List[str]:
+        with self._guard:
+            return sorted(self._sessions.get(principal_id, set()))
+
+    @contextmanager
+    def turn_lock(self, principal_id: str, session_id: str):
+        key = self._key(principal_id, session_id)
+        with self._guard:
+            lock = self._locks.setdefault(key, RLock())
+        with lock:
+            yield
 
 
 def get_session_store() -> SessionStore:
