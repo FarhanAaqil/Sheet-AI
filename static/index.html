@@ -129,7 +129,7 @@ body {
 <div class="flex-1 flex overflow-hidden w-full relative">
 
     <!-- Left Collapsible Config & Connector Sidebar -->
-    <aside id="configSidebar" class="w-72 bg-surface border-r border-outline-variant flex flex-col shrink-0 transition-all duration-300 z-20 overflow-y-auto custom-scrollbar">
+    <aside id="configSidebar" tabindex="0" role="region" aria-label="System Configuration" class="w-72 bg-surface border-r border-outline-variant flex flex-col shrink-0 transition-all duration-300 z-20 overflow-y-auto custom-scrollbar focus:outline-none">
         <div class="p-4 space-y-4">
             <!-- Sidebar Title -->
             <div class="flex items-center justify-between pb-2 border-b border-outline-variant/60">
@@ -214,7 +214,7 @@ body {
             </div>
 
             <!-- Table Container -->
-            <div class="flex-1 overflow-auto custom-scrollbar relative">
+            <div tabindex="0" role="region" aria-label="Spreadsheet data table" class="flex-1 overflow-auto custom-scrollbar relative focus:outline-none focus:ring-1 focus:ring-primary/40">
                 <table class="w-full text-left border-collapse whitespace-nowrap min-w-max text-xs" id="dataTable">
                     <thead class="sticky top-0 z-10 bg-surface/90 backdrop-blur border-b border-outline-variant font-medium text-on-surface-variant">
                         <tr id="tableHeaderRow"></tr>
@@ -231,7 +231,7 @@ body {
         </section>
 
         <!-- VIEW 2: VISUAL ANALYTICS DASHBOARD -->
-        <section id="analyticsView" class="hidden flex-1 flex-col h-full overflow-y-auto custom-scrollbar p-6 space-y-6">
+        <section id="analyticsView" tabindex="0" role="region" aria-label="Visual Analytics Dashboard" class="hidden flex-1 flex-col h-full overflow-y-auto custom-scrollbar p-6 space-y-6 focus:outline-none">
             <div class="flex items-center justify-between pb-2 border-b border-outline-variant">
                 <div>
                     <h2 class="text-base font-semibold text-on-surface">Visual Analytics & Insights</h2>
@@ -324,7 +324,7 @@ body {
         </div>
 
         <!-- Message Stream -->
-        <div id="messageStream" class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+        <div id="messageStream" tabindex="0" role="region" aria-label="Chat Message Stream" class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4 focus:outline-none">
             <!-- Initial Greeting -->
             <div class="flex gap-2.5">
                 <div class="w-7 h-7 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
