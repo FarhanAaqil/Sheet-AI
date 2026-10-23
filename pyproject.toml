@@ -2,6 +2,29 @@
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+py-modules = [
+    "agent",
+    "app",
+    "cache_service",
+    "config",
+    "conftest",
+    "database",
+    "domain_errors",
+    "eval_harness",
+    "evaluation_service",
+    "main",
+    "observability",
+    "rate_limiter",
+    "request_context",
+    "retrieval",
+    "retry_handler",
+    "security",
+    "session_store",
+    "sheets_writer",
+    "spreadsheet_registry",
+]
+
 [project]
 name = "sheetsense-ai"
 version = "1.0.0"
