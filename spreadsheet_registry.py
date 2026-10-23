@@ -8,7 +8,6 @@ from urllib.parse import urlparse
 
 import database
 
-
 SHEET_URL_PATTERN = re.compile(r"^/spreadsheets/d/([A-Za-z0-9_-]{10,})")
 PERMISSIONS = {"viewer", "editor"}
 

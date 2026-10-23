@@ -2,20 +2,20 @@
 # Exposes the LangChain agent as a REST API with a single /chat endpoint.
 # Any frontend, Postman, or third-party workflow can integrate via HTTP.
 
-import os
 import json
-import uuid
 import logging
-
+import os
+import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Request, Header, Query
-
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from dotenv import load_dotenv
 from starlette.staticfiles import StaticFiles
 
+import database
 from agent import SheetSenseAgent  # Our LangChain agent module
 
 # Bootstrap
@@ -24,12 +24,39 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger(__name__)
 
 from config import Settings
+from observability import (
+    RequestTracingMiddleware,
+    configure_opentelemetry,
+    record_action,
+    request_id,
+    trace_id,
+)
+from observability import metrics as runtime_metrics
 from security import APIPrincipal, SecurityHeadersMiddleware, build_auth_dependencies
 
 settings = Settings.from_env()
 _authenticator, get_api_key, require_roles = build_auth_dependencies(settings)
 
-# FastAPI App
+# Process-wide immutable service holder, initialized by the application lifespan.
+_agent: Optional[SheetSenseAgent] = None
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    global _agent
+    settings.validate_startup()
+    database.init_db()
+    if _agent is None:
+        try:
+            logger.info("Initializing SheetSense AI agent")
+            _agent = SheetSenseAgent()
+        except Exception as exc:
+            logger.warning("Agent startup failed: exception_type=%s", type(exc).__name__)
+            if settings.is_production:
+                raise
+    yield
+
+
 app = FastAPI(
     title="SheetSense AI",
     description=(
@@ -37,7 +64,9 @@ app = FastAPI(
         "Send plain-English commands and receive live spreadsheet insights."
     ),
     version="1.0.0",
+    lifespan=lifespan,
 )
+configure_opentelemetry(app)
 
 # Allow all origins for development (tighten in production)
 app.add_middleware(
@@ -48,12 +77,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
-app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+app.add_middleware(RequestTracingMiddleware)
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
+    name="static",
+)
 
-import database
-from rate_limiter import rate_limit
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from rate_limiter import rate_limit
+
 
 # Global Exception Handlers (Architecture §7, PRD FR-9)
 @app.exception_handler(StarletteHTTPException)
@@ -74,8 +109,10 @@ async def global_exception_handler(request: Request, exc: Exception):
     """
     error_id = str(uuid.uuid4())[:8]
     logger.error(
-        "[UnhandledException] error_id=%s path=%s exception_type=%s",
+        "[UnhandledException] error_id=%s request_id=%s trace_id=%s path=%s exception_type=%s",
         error_id,
+        request_id(),
+        trace_id(),
         request.url.path,
         type(exc).__name__,
     )
@@ -87,24 +124,6 @@ async def global_exception_handler(request: Request, exc: Exception):
         },
     )
 
-# Singleton agent (loaded once at startup)
-_agent: Optional[SheetSenseAgent] = None
-
-@app.on_event("startup")
-async def startup_event():
-    global _agent
-    settings.validate_startup()
-    logger.info("Initializing SQLite database tables …")
-    database.init_db()
-    if _agent is None:
-        try:
-            logger.info("Initializing SheetSense AI Agent …")
-            _agent = SheetSenseAgent()
-            logger.info("Agent ready.")
-        except Exception as exc:
-            logger.warning("Agent startup failed: exception_type=%s", type(exc).__name__)
-            if settings.is_production:
-                raise
 
 def get_agent() -> SheetSenseAgent:
     if _agent is None:
@@ -117,11 +136,11 @@ def get_agent() -> SheetSenseAgent:
 
 # Request / Response models
 class ChatRequest(BaseModel):
-    message: str = Field(..., example="What is the total revenue for Q1?")
+    message: str = Field(..., json_schema_extra={"example": "What is the total revenue for Q1?"})
     session_id: Optional[str] = Field(
         default=None,
         description="Optional session ID for conversation memory.",
-        example="user-abc-123",
+        json_schema_extra={"example": "user-abc-123"},
     )
     connection_id: Optional[str] = Field(
         default=None,
@@ -130,24 +149,31 @@ class ChatRequest(BaseModel):
     sheet_name: Optional[str] = Field(
         default=None,
         description="Which worksheet to target. Defaults to the first sheet.",
-        example="Sales",
+        json_schema_extra={"example": "Sales"},
     )
+
 
 class ChatResponse(BaseModel):
     answer: str
     session_id: str
     connection_id: str
-    tool_calls_made: list[str] = []
+    tool_calls_made: list[str] = Field(default_factory=list)
     raw_steps: Optional[list[Dict[str, Any]]] = None
     pending_action: Optional[Dict[str, Any]] = None
+
 
 class HealthResponse(BaseModel):
     status: str
     sheets_connected: bool
     sheets_count: int
 
+
 class ConnectSheetRequest(BaseModel):
-    sheet_url: str = Field(..., description="External Google Sheets URL", example="https://docs.google.com/spreadsheets/d/...")
+    sheet_url: str = Field(
+        ...,
+        description="External Google Sheets URL",
+        json_schema_extra={"example": "https://docs.google.com/spreadsheets/d/..."},
+    )
 
 
 class SessionResponse(BaseModel):
@@ -155,6 +181,7 @@ class SessionResponse(BaseModel):
 
 
 # Endpoints
+
 
 @app.get("/", response_class=HTMLResponse, tags=["UI"])
 def root():
@@ -165,9 +192,11 @@ def root():
             return f.read()
     return '{"message": "SheetSense AI is running. POST to /chat to query your spreadsheet."}'
 
+
 @app.get("/health/live", tags=["Meta"], include_in_schema=False)
 def liveness():
     return {"status": "ok"}
+
 
 @app.get("/health/ready", tags=["Meta"])
 def readiness(
@@ -191,7 +220,10 @@ def readiness(
         logger.warning("Readiness check failed: exception_type=%s", type(exc).__name__)
         raise HTTPException(
             status_code=503,
-            detail={"code": "SERVICE_NOT_READY", "message": "A required dependency is unavailable."},
+            detail={
+                "code": "SERVICE_NOT_READY",
+                "message": "A required dependency is unavailable.",
+            },
         ) from None
 
 
@@ -213,7 +245,9 @@ def health(
 @app.post("/chat", response_model=ChatResponse, tags=["Agent"])
 def chat(
     request: ChatRequest,
-    _rate_limit: bool = Depends(rate_limit(max_requests=60, window_seconds=60, endpoint_group="chat")),
+    _rate_limit: bool = Depends(
+        rate_limit(max_requests=60, window_seconds=60, endpoint_group="chat")
+    ),
     principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     agent: SheetSenseAgent = Depends(get_agent),
 ):
@@ -232,9 +266,7 @@ def chat(
         bool(request.session_id),
         len(request.message),
     )
-    session_id = request.session_id or agent.session_store.create_session(
-        principal.principal_id
-    )
+    session_id = request.session_id or agent.session_store.create_session(principal.principal_id)
     try:
         result = agent.run(
             user_message=request.message,
@@ -257,7 +289,6 @@ def chat(
         raw_steps=result.get("intermediate_steps"),
         pending_action=result.get("pending_action"),
     )
-
 
 
 @app.get("/sheets", tags=["Agent"])
@@ -362,9 +393,7 @@ def get_sheet_data(
 @app.get("/connections", tags=["Agent"])
 def list_connections(
     agent: SheetSenseAgent = Depends(get_agent),
-    principal: APIPrincipal = Depends(
-        require_roles("viewer", "editor", "approver", "admin")
-    ),
+    principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     _rate_limit=Depends(rate_limit(60, 60, "connections")),
 ):
     """List only spreadsheet connections owned by the authenticated principal."""
@@ -374,22 +403,16 @@ def list_connections(
 @app.post("/sessions", response_model=SessionResponse, tags=["Sessions"])
 def create_session(
     agent: SheetSenseAgent = Depends(get_agent),
-    principal: APIPrincipal = Depends(
-        require_roles("viewer", "editor", "approver", "admin")
-    ),
+    principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     _rate_limit=Depends(rate_limit(30, 60, "sessions")),
 ):
-    return SessionResponse(
-        session_id=agent.session_store.create_session(principal.principal_id)
-    )
+    return SessionResponse(session_id=agent.session_store.create_session(principal.principal_id))
 
 
 @app.get("/sessions", tags=["Sessions"])
 def list_sessions(
     agent: SheetSenseAgent = Depends(get_agent),
-    principal: APIPrincipal = Depends(
-        require_roles("viewer", "editor", "approver", "admin")
-    ),
+    principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     _rate_limit=Depends(rate_limit(60, 60, "sessions")),
 ):
     return {"sessions": agent.session_store.list_sessions(principal.principal_id)}
@@ -399,9 +422,7 @@ def list_sessions(
 def clear_session(
     session_id: str,
     agent: SheetSenseAgent = Depends(get_agent),
-    principal: APIPrincipal = Depends(
-        require_roles("viewer", "editor", "approver", "admin")
-    ),
+    principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     _rate_limit=Depends(rate_limit(30, 60, "sessions")),
 ):
     if session_id not in agent.session_store.list_sessions(principal.principal_id):
@@ -414,9 +435,7 @@ def clear_session(
 def delete_session(
     session_id: str,
     agent: SheetSenseAgent = Depends(get_agent),
-    principal: APIPrincipal = Depends(
-        require_roles("viewer", "editor", "approver", "admin")
-    ),
+    principal: APIPrincipal = Depends(require_roles("viewer", "editor", "approver", "admin")),
     _rate_limit=Depends(rate_limit(30, 60, "sessions")),
 ):
     if session_id not in agent.session_store.list_sessions(principal.principal_id):
@@ -425,10 +444,10 @@ def delete_session(
     return {"status": "deleted", "session_id": session_id}
 
 
-
 # Confirmation Gate Endpoints (Architecture §2, §6)
 import time
 from datetime import datetime, timezone
+
 import sheets_writer
 
 
@@ -452,6 +471,7 @@ def _execute_confirmed_action(
         idempotency_key=idempotency_key,
     )
     outcome = claim.get("claim_status")
+    record_action(str(outcome or "unknown"))
     if outcome == "not_found":
         raise HTTPException(status_code=404, detail="Action not found.")
     if outcome == "forbidden":
@@ -494,13 +514,13 @@ def _execute_confirmed_action(
     try:
         target = json.loads(claim["target_json"])
         proposed_change = json.loads(claim["proposed_change_json"])
-        expected_state = json.loads(claim["expected_state_json"]) if claim.get("expected_state_json") else None
+        expected_state = (
+            json.loads(claim["expected_state_json"]) if claim.get("expected_state_json") else None
+        )
         connection_id = claim.get("connection_id")
         if connection_id == "default":
             connection_id = None
-        _, spreadsheet = agent.resolve_spreadsheet(
-            principal.principal_id, connection_id
-        )
+        _, spreadsheet = agent.resolve_spreadsheet(principal.principal_id, connection_id)
         write_result = sheets_writer.execute_action(
             spreadsheet=spreadsheet,
             tool_name=claim["tool_name"],
@@ -510,6 +530,13 @@ def _execute_confirmed_action(
         )
         if not database.complete_action(action_id, write_result):
             raise RuntimeError("Action state changed before completion.")
+        database.append_audit_event(
+            "action.confirmed",
+            "success",
+            principal.principal_id,
+            action_id,
+            {"tool_name": claim["tool_name"]},
+        )
         latency_ms = int((time.time() - start_time) * 1000)
         database.log_tool_call(
             tool_name=claim["tool_name"],
@@ -528,6 +555,13 @@ def _execute_confirmed_action(
         )
     except sheets_writer.SheetsStateConflictError:
         database.fail_action(action_id, "PRECONDITION_FAILED")
+        database.append_audit_event(
+            "action.confirmation",
+            "conflict",
+            principal.principal_id,
+            action_id,
+            {"failure_code": "PRECONDITION_FAILED"},
+        )
         raise HTTPException(
             status_code=409,
             detail={
@@ -541,6 +575,13 @@ def _execute_confirmed_action(
             action_id,
             "WRITE_STATE_UNKNOWN",
             {"error_id": error_id},
+        )
+        database.append_audit_event(
+            "action.confirmation",
+            "unknown",
+            principal.principal_id,
+            action_id,
+            {"failure_code": "WRITE_STATE_UNKNOWN", "error_id": error_id},
         )
         database.log_tool_call(
             tool_name=claim.get("tool_name", "unknown"),
@@ -574,12 +615,12 @@ def _execute_confirmed_action(
 def confirm_action(
     action_id: str,
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
-    _rate_limit: bool = Depends(rate_limit(max_requests=20, window_seconds=60, endpoint_group="confirm")),
+    _rate_limit: bool = Depends(
+        rate_limit(max_requests=20, window_seconds=60, endpoint_group="confirm")
+    ),
     principal: APIPrincipal = Depends(require_roles("approver", "admin")),
     agent: SheetSenseAgent = Depends(get_agent),
 ):
-
-
     """
     CONFIRMATION GATE: The ONLY code path that executes destructive Google Sheets writes.
 
@@ -623,12 +664,32 @@ def metrics(
     return database.get_metrics_summary()
 
 
+@app.get("/admin/audit", tags=["Observability"])
+def audit_events(
+    limit: int = Query(default=100, ge=1, le=500),
+    _key=Depends(require_roles("admin")),
+):
+    return {"events": database.get_audit_events(limit)}
+
+
+@app.get("/metrics/prometheus", tags=["Observability"], include_in_schema=False)
+def prometheus_metrics(_key=Depends(require_roles("admin"))):
+    from fastapi.responses import PlainTextResponse
+
+    return PlainTextResponse(
+        runtime_metrics.render_prometheus(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
 # Evaluation Endpoints (Architecture §6, PRD FR-8)
-import eval_harness
+from evaluation_service import EvaluationService, LiveEvaluationConfig
 
 
 @app.post("/eval/run", tags=["Evaluation"])
 def trigger_eval_run(
+    mode: str = Query(default="offline", pattern="^(offline|live|adversarial)$"),
+    repetitions: int = Query(default=3, ge=2, le=10),
     _key=Depends(require_roles("admin")),
     _rate_limit=Depends(rate_limit(5, 60, "evaluation")),
 ):
@@ -637,8 +698,19 @@ def trigger_eval_run(
     computes TSA, EA, CGA, IBR, and latency percentiles, and logs the run to SQLite.
     """
     try:
-        summary = eval_harness.run_evaluation()
-        return summary
+        service = EvaluationService()
+        if mode == "offline":
+            return service.run_offline()
+        if mode == "adversarial":
+            return service.run_adversarial()
+        if _agent is None:
+            raise HTTPException(status_code=503, detail="Live agent is unavailable.")
+        return service.run_live(
+            _agent,
+            LiveEvaluationConfig(repetitions=repetitions),
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         error_id = str(uuid.uuid4())[:8]
         logger.error(

@@ -30,8 +30,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov httpx pip-audit
+          pip install -e ".[dev]"
+          pip install pip-audit
+
+      - name: Formatting and linting
+        run: |
+          ruff format --check .
+          ruff check .
+
+      - name: Type checking
+        run: mypy
 
       - name: Audit Python dependencies
         run: |
@@ -43,8 +51,44 @@ jobs:
 
       - name: Run Unit & Regression Test Suite
         run: |
-          pytest tests/ -v
+          pytest tests/ -v --cov=. --cov-branch --cov-report=xml --cov-report=json
+          python scripts/check_coverage.py
+
+      - name: Evaluation regression comparison
+        run: python scripts/check_eval_regression.py
+
+      - name: Browser and accessibility tests
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+          npm run test:browser
 
       - name: Build production container
         run: |
-          docker build --tag sheetsense-ai:ci .
+          docker build --tag sheetsense-ai:${{ github.sha }} .
+
+      - name: Boot container and smoke test
+        run: |
+          docker run -d --name sheetsense-smoke -p 8000:8000 \
+            -e APP_ENV=development -e ENV=local_no_redis \
+            sheetsense-ai:${{ github.sha }}
+          for i in {1..20}; do
+            curl --fail http://127.0.0.1:8000/health/live && break
+            sleep 2
+          done
+          curl --fail http://127.0.0.1:8000/health/live
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: sheetsense-ai:${{ github.sha }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-evidence
+          path: |
+            coverage.xml
+            sbom.spdx.json

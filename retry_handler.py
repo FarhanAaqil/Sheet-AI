@@ -2,9 +2,9 @@
 # Provides client-side exponential backoff with jitter on Gemini LLM calls to
 # gracefully handle free-tier 429 (ResourceExhausted) quota rate limit spikes.
 
-import time
-import random
 import logging
+import random
+import time
 from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger(__name__)

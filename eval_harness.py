@@ -9,18 +9,18 @@
 # fixtures and does NOT measure live LLM latency unless a live agent is provided.
 # Persists all run metrics to SQLite for audit and regression tracking.
 
-import os
 import json
+import logging
+import os
 import time
 import uuid
-import logging
 from typing import Any, Dict, List, Optional
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 
 import database
-from session_store import InMemorySessionStore
-from retrieval import SchemaIndex, MultiQueryReformulator, RAGFusionRetriever
+from retrieval import RAGFusionRetriever, SchemaIndex
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +47,9 @@ class EvaluationHarness:
 
     def _init_mock_agent(self):
         """Build an in-memory evaluation agent backed by CSV fixtures if live agent not passed."""
-        from agent import SheetTools, SheetSenseAgent
         from unittest.mock import MagicMock
+
+        from agent import SheetTools
 
         fixtures_dir = os.path.join(os.path.dirname(__file__), "tests", "fixtures")
         orders_df = pd.read_csv(os.path.join(fixtures_dir, "orders.csv"))
@@ -78,12 +79,15 @@ class EvaluationHarness:
 
         return tools, schema_index, retriever
 
-    def run_eval(self, model_name: str = "gemini-1.5-pro-latest") -> Dict[str, Any]:
+    def run_eval(
+        self,
+        model_name: str = "deterministic-tool-router",
+        persist: bool = True,
+    ) -> Dict[str, Any]:
         """
         Execute full evaluation suite and calculate empirical metrics.
         """
         run_id = str(uuid.uuid4())
-        start_run_time = time.time()
         results = []
         latencies = []
 
@@ -107,7 +111,7 @@ class EvaluationHarness:
 
             try:
                 # 1. RAG-Fusion Schema Retrieval
-                retrieved = retriever.retrieve_top_k(query, top_k=4)
+                retriever.retrieve_top_k(query, top_k=4)
 
                 # 2. Execution Routing Simulation / Agent invocation
                 if self.agent is not None:
@@ -163,19 +167,21 @@ class EvaluationHarness:
             else:
                 ibr_pass = True
 
-            results.append({
-                "id": case_id,
-                "category": category,
-                "query": query,
-                "latency_ms": round(elapsed_ms, 2),
-                "tools_used": tools_used,
-                "answer_snippet": answer[:150],
-                "bra_pass": bra_pass,
-                "tsa_pass": bra_pass,  # compatibility alias
-                "ea_pass": ea_pass,
-                "cga_pass": cga_pass,
-                "ibr_pass": ibr_pass,
-            })
+            results.append(
+                {
+                    "id": case_id,
+                    "category": category,
+                    "query": query,
+                    "latency_ms": round(elapsed_ms, 2),
+                    "tools_used": tools_used,
+                    "answer_snippet": answer[:150],
+                    "bra_pass": bra_pass,
+                    "tsa_pass": bra_pass,  # compatibility alias
+                    "ea_pass": ea_pass,
+                    "cga_pass": cga_pass,
+                    "ibr_pass": ibr_pass,
+                }
+            )
 
         total_cases = len(results)
         bra_score = sum(1 for r in results if r["bra_pass"]) / total_cases
@@ -183,16 +189,12 @@ class EvaluationHarness:
 
         conf_cases = [r for r in results if r["category"] == "destructive_gated"]
         cga_score = (
-            sum(1 for r in conf_cases if r["cga_pass"]) / len(conf_cases)
-            if conf_cases
-            else 1.0
+            sum(1 for r in conf_cases if r["cga_pass"]) / len(conf_cases) if conf_cases else 1.0
         )
 
         inj_cases = [r for r in results if r["category"] == "security_injection"]
         ibr_score = (
-            sum(1 for r in inj_cases if r["ibr_pass"]) / len(inj_cases)
-            if inj_cases
-            else 1.0
+            sum(1 for r in inj_cases if r["ibr_pass"]) / len(inj_cases) if inj_cases else 1.0
         )
 
         p50_latency = float(np.percentile(latencies, 50))
@@ -216,6 +218,8 @@ class EvaluationHarness:
 
         # Persist run to SQLite eval_runs table
         try:
+            if not persist:
+                return summary
             database.log_eval_run(
                 eval_id=run_id,
                 total_queries=total_cases,
@@ -232,12 +236,11 @@ class EvaluationHarness:
 
         return summary
 
-    def _execute_direct_case(
-        self, tools: Any, query: str, sheet_name: str, category: str
-    ):
+    def _execute_direct_case(self, tools: Any, query: str, sheet_name: str, category: str):
         """Deterministic tool executor for offline benchmark evaluation."""
-        from agent import UpdateCellInput, DeleteRowInput, FilterAndAggregateInput
         from pydantic import ValidationError
+
+        from agent import DeleteRowInput, FilterAndAggregateInput, UpdateCellInput
 
         q = query.lower()
         tools_used = []
@@ -303,9 +306,21 @@ class EvaluationHarness:
         elif "update" in q or "change" in q or "modify" in q:
             tools_used.append("update_cell")
             if "ord-1002" in q:
-                payload = {"sheet_name": sheet_name, "id_column": "order_id", "id_value": "ORD-1002", "update_column": "price", "new_value": 99.99}
+                payload = {
+                    "sheet_name": sheet_name,
+                    "id_column": "order_id",
+                    "id_value": "ORD-1002",
+                    "update_column": "price",
+                    "new_value": 99.99,
+                }
             else:
-                payload = {"sheet_name": sheet_name, "id_column": "order_id", "id_value": "ORD-1013", "update_column": "status", "new_value": "completed"}
+                payload = {
+                    "sheet_name": sheet_name,
+                    "id_column": "order_id",
+                    "id_value": "ORD-1013",
+                    "update_column": "status",
+                    "new_value": "completed",
+                }
             update_tool = getattr(tools, "update_cell")
             res = update_tool(json.dumps(payload))
             pending_action = tools.last_pending_action
@@ -314,7 +329,11 @@ class EvaluationHarness:
         elif "delete" in q or "remove" in q:
             tools_used.append("delete_row")
             if "cust-110" in q:
-                payload = {"sheet_name": "Customers", "id_column": "customer_id", "id_value": "CUST-110"}
+                payload = {
+                    "sheet_name": "Customers",
+                    "id_column": "customer_id",
+                    "id_value": "CUST-110",
+                }
             else:
                 payload = {"sheet_name": "Orders", "id_column": "order_id", "id_value": "ORD-1020"}
             res = tools.delete_row(json.dumps(payload))
@@ -324,53 +343,77 @@ class EvaluationHarness:
             tools_used.append("filter_and_aggregate")
             df = tools._cache.get("Orders")
             if "completed" in q and "status" in q:
-                res = tools.filter_and_aggregate(json.dumps({
-                    "sheet_name": "Orders",
-                    "aggregation": "sum",
-                    "column": "price",
-                    "filter_column": "status",
-                    "filter_operator": "==",
-                    "filter_value": "completed",
-                }))
+                res = tools.filter_and_aggregate(
+                    json.dumps(
+                        {
+                            "sheet_name": "Orders",
+                            "aggregation": "sum",
+                            "column": "price",
+                            "filter_column": "status",
+                            "filter_operator": "==",
+                            "filter_value": "completed",
+                        }
+                    )
+                )
                 answer = f"Total revenue from completed orders is ${float(res):,.2f}"
             elif "accessories" in q:
-                res = tools.filter_and_aggregate(json.dumps({
-                    "sheet_name": "Orders",
-                    "aggregation": "mean",
-                    "column": "unit_price",
-                    "filter_column": "category",
-                    "filter_operator": "==",
-                    "filter_value": "Accessories",
-                }))
+                res = tools.filter_and_aggregate(
+                    json.dumps(
+                        {
+                            "sheet_name": "Orders",
+                            "aggregation": "mean",
+                            "column": "unit_price",
+                            "filter_column": "category",
+                            "filter_operator": "==",
+                            "filter_value": "Accessories",
+                        }
+                    )
+                )
                 answer = f"Average unit price across Accessories is ${float(res):,.2f}"
             elif "units" in q or "quantity" in q:
-                res = tools.filter_and_aggregate(json.dumps({
-                    "sheet_name": "Orders",
-                    "aggregation": "sum",
-                    "column": "quantity",
-                }))
+                res = tools.filter_and_aggregate(
+                    json.dumps(
+                        {
+                            "sheet_name": "Orders",
+                            "aggregation": "sum",
+                            "column": "quantity",
+                        }
+                    )
+                )
                 answer = f"Total product units ordered: {res}"
             elif "highest" in q:
-                max_val = tools.filter_and_aggregate(json.dumps({
-                    "sheet_name": "Orders",
-                    "aggregation": "max",
-                    "column": "price",
-                }))
+                max_val = tools.filter_and_aggregate(
+                    json.dumps(
+                        {
+                            "sheet_name": "Orders",
+                            "aggregation": "max",
+                            "column": "price",
+                        }
+                    )
+                )
                 max_row = df.loc[pd.to_numeric(df["price"], errors="coerce").idxmax()]
                 answer = f"Highest price order is {max_row['order_id']} for ${float(max_val):,.2f}"
             elif "count" in q or "status category" in q:
-                res = tools.filter_and_aggregate(json.dumps({
-                    "sheet_name": "Orders",
-                    "aggregation": "value_counts",
-                    "column": "status",
-                }))
+                res = tools.filter_and_aggregate(
+                    json.dumps(
+                        {
+                            "sheet_name": "Orders",
+                            "aggregation": "value_counts",
+                            "column": "status",
+                        }
+                    )
+                )
                 answer = str(res)
             else:
-                res = tools.filter_and_aggregate(json.dumps({
-                    "sheet_name": "Orders",
-                    "aggregation": "sum",
-                    "column": "price",
-                }))
+                res = tools.filter_and_aggregate(
+                    json.dumps(
+                        {
+                            "sheet_name": "Orders",
+                            "aggregation": "sum",
+                            "column": "price",
+                        }
+                    )
+                )
                 answer = f"Total sum: ${float(res):,.2f}"
         else:
             tools_used.append("read_sheet")

@@ -26,6 +26,8 @@ COPY --from=builder /install /usr/local
 COPY *.py ./
 COPY static ./static
 COPY docs ./docs
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 RUN addgroup --system sheetsense \
     && adduser --system --ingroup sheetsense sheetsense \

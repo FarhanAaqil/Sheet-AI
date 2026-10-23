@@ -4,9 +4,13 @@
 
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
+
+import numpy as np
 import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,7 @@ class MultiQueryReformulator:
         "1. Literal: exact terms, column names, and entities.\n"
         "2. Conceptual: the analytical or calculation goal.\n"
         "3. Synonym: alternative domain terms and synonyms.\n"
-        "Return ONLY a JSON list of 3 strings, e.g. [\"variant 1\", \"variant 2\", \"variant 3\"]."
+        'Return ONLY a JSON list of 3 strings, e.g. ["variant 1", "variant 2", "variant 3"].'
     )
 
     def __init__(self, llm: Optional[Any] = None):
@@ -47,6 +51,7 @@ class MultiQueryReformulator:
         if self.llm is not None:
             try:
                 from langchain_core.messages import HumanMessage, SystemMessage
+
                 messages = [
                     SystemMessage(content=self.REFORMULATION_PROMPT),
                     HumanMessage(content=f"User query: {clean_query}"),
@@ -128,10 +133,10 @@ class MultiQueryReformulator:
         return [v1, v2, v3]
 
 
-
 @dataclass
 class ColumnMetadata:
     """Represents a single indexed column with schema and sample metadata."""
+
     sheet_name: str
     column_name: str
     dtype: str
@@ -162,7 +167,6 @@ COMMON_COLUMN_DESCRIPTIONS = {
 }
 
 
-
 class SchemaIndex:
     """
     Maintains searchable metadata for all sheets and columns across the spreadsheet.
@@ -180,7 +184,7 @@ class SchemaIndex:
     ) -> None:
         """
         Build index entries for every column across all loaded DataFrames.
-        
+
         Args:
             sheets: Dict mapping sheet_name -> pd.DataFrame.
             custom_descriptions: Optional dict of {(sheet, col) or col: description}.
@@ -201,17 +205,22 @@ class SchemaIndex:
                 sensitive = any(
                     marker in normalized_name
                     for marker in (
-                        "email", "phone", "password", "secret", "token",
-                        "api_key", "private_key", "ssn", "social_security",
+                        "email",
+                        "phone",
+                        "password",
+                        "secret",
+                        "token",
+                        "api_key",
+                        "private_key",
+                        "ssn",
+                        "social_security",
                     )
                 )
 
                 # Extract up to 5 non-null distinct sample values
                 try:
                     unique_vals = df[col].dropna().unique()[:5]
-                    sample_vals = [
-                        v.item() if hasattr(v, "item") else v for v in unique_vals
-                    ]
+                    sample_vals = [v.item() if hasattr(v, "item") else v for v in unique_vals]
                 except Exception:
                     sample_vals = list(df[col].dropna().iloc[:5])
                 if sensitive:
@@ -247,7 +256,9 @@ class SchemaIndex:
 
             self._by_sheet[sheet_name] = sheet_entries
 
-        logger.info(f"SchemaIndex built with {len(self.entries)} column metadata entries across {len(sheets)} sheets.")
+        logger.info(
+            f"SchemaIndex built with {len(self.entries)} column metadata entries across {len(sheets)} sheets."
+        )
 
     def get_entries(self) -> List[ColumnMetadata]:
         """Return all column metadata entries."""
@@ -262,9 +273,6 @@ class SchemaIndex:
 
 
 # RAG-Fusion Retriever (Architecture §5, PRD FR-6)
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
 
 
 class RAGFusionRetriever:
@@ -339,12 +347,8 @@ class RAGFusionRetriever:
                     similarity = float(sims[idx])
                     if similarity < minimum_similarity:
                         continue
-                    rrf_scores[idx] = rrf_scores.get(idx, 0.0) + 1.0 / (
-                        self.k + rank
-                    )
-                    max_similarities[idx] = max(
-                        max_similarities.get(idx, 0.0), similarity
-                    )
+                    rrf_scores[idx] = rrf_scores.get(idx, 0.0) + 1.0 / (self.k + rank)
+                    max_similarities[idx] = max(max_similarities.get(idx, 0.0), similarity)
             except Exception as exc:
                 logger.warning(
                     "Similarity computation failed: exception_type=%s",

@@ -1,6 +1,5 @@
 # SheetSense AI — Multi-Query Reformulation Unit Tests
 
-import pytest
 from unittest.mock import MagicMock
 
 from retrieval import MultiQueryReformulator
@@ -31,7 +30,9 @@ def test_llm_multi_query_reformulation():
     """Verify LLM-based multi-query reformulator parses JSON response correctly."""
     mock_llm = MagicMock()
     mock_response = MagicMock()
-    mock_response.content = '["find orders in north", "aggregate unit_price by region", "sales total territory north"]'
+    mock_response.content = (
+        '["find orders in north", "aggregate unit_price by region", "sales total territory north"]'
+    )
     mock_llm.invoke.return_value = mock_response
 
     reformulator = MultiQueryReformulator(llm=mock_llm)

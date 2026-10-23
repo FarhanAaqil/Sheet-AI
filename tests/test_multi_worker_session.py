@@ -2,13 +2,10 @@
 # Verifies that two distinct worker/agent instances sharing a RedisSessionStore
 # correctly synchronize multi-turn conversation memory across workers.
 
-import os
 import json
-import pytest
 from unittest.mock import MagicMock, patch
 
 from session_store import RedisSessionStore
-from agent import SheetTools, SheetSenseAgent
 
 
 def test_multi_worker_session_memory_synchronization():
@@ -30,11 +27,13 @@ def test_multi_worker_session_memory_synchronization():
 
     def mock_eval(script, key_count, key, index_key, human, ai, max_messages, ttl, sid):
         history = json.loads(shared_redis_storage.get(key, "[]"))
-        history.extend([
-            {"role": "human", "content": human},
-            {"role": "ai", "content": ai},
-        ])
-        shared_redis_storage[key] = json.dumps(history[-int(max_messages):])
+        history.extend(
+            [
+                {"role": "human", "content": human},
+                {"role": "ai", "content": ai},
+            ]
+        )
+        shared_redis_storage[key] = json.dumps(history[-int(max_messages) :])
         return len(history)
 
     mock_redis.set.side_effect = mock_set
@@ -44,7 +43,7 @@ def test_multi_worker_session_memory_synchronization():
     with patch("redis.from_url", return_value=mock_redis):
         # Worker A initializes its session store
         store_worker_a = RedisSessionStore("redis://localhost:6379/0")
-        
+
         # Worker B initializes its session store
         store_worker_b = RedisSessionStore("redis://localhost:6379/0")
 

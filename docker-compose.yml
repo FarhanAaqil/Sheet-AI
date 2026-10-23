@@ -9,6 +9,7 @@ services:
       - APP_ENV=${APP_ENV:-development}
       - REDIS_URL=redis://redis:6379/0
       - SQLITE_DB_PATH=/app/data/sheetsense.db
+      - DATABASE_URL=postgresql+psycopg://sheetsense:${POSTGRES_PASSWORD:-change-me}@postgres:5432/sheetsense
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000,http://localhost:8501,http://127.0.0.1:8501}
       - ALLOW_INSECURE_NO_AUTH=${ALLOW_INSECURE_NO_AUTH:-true}
       - SHEETSENSE_API_KEY=${SHEETSENSE_API_KEY:-dev-key-123}
@@ -20,6 +21,10 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
       interval: 30s
@@ -44,6 +49,33 @@ services:
       retries: 5
     restart: unless-stopped
 
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: sheetsense
+      POSTGRES_USER: sheetsense
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sheetsense -d sheetsense"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    image: sheetsense-ai:latest
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      - DATABASE_URL=postgresql+psycopg://sheetsense:${POSTGRES_PASSWORD:-change-me}@postgres:5432/sheetsense
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
 volumes:
   redis_data:
   sqlite_data:
+  postgres_data:

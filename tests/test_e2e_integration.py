@@ -6,8 +6,9 @@
 # 4. Automated evaluation suite endpoint (/eval/run)
 
 import uuid
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 from fastapi.testclient import TestClient
 
 import database

@@ -8,18 +8,16 @@
 #  • Visual analytics dashboard with Plotly charts and custom studio
 #  • System telemetry, rate limit tracking, and evaluation harness runner
 
+import html
 import os
 import time
-import json
 import uuid
-import html
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
-import streamlit as st
 import pandas as pd
-import requests
 import plotly.express as px
-import plotly.graph_objects as go
+import requests
+import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,7 +31,8 @@ st.set_page_config(
 )
 
 # Custom High-End Obsidian & Indigo CSS
-st.markdown("""
+st.markdown(
+    """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
@@ -161,29 +160,165 @@ st.markdown("""
         border: 1px solid #373c4e !important;
     }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # Fallback / Offline Dataset Definition (Orders & Customers)
 DEFAULT_DATASETS = {
-    "Orders": pd.DataFrame([
-        {"order_id": "ORD-1001", "customer_id": "CUST-842", "category": "Electronics", "product": "Pro Keyboard", "quantity": 2, "unit_price": 149.99, "price": 299.98, "status": "completed", "order_date": "2023-10-24 14:32"},
-        {"order_id": "ORD-1002", "customer_id": "CUST-911", "category": "Accessories", "product": "Mousepad XL", "quantity": 1, "unit_price": 29.99, "price": 29.99, "status": "completed", "order_date": "2023-10-24 15:01"},
-        {"order_id": "ORD-1003", "customer_id": "CUST-105", "category": "Furniture", "product": "Ergo Chair", "quantity": 1, "unit_price": 549.00, "price": 549.00, "status": "cancelled", "order_date": "2023-10-24 16:12"},
-        {"order_id": "ORD-1004", "customer_id": "CUST-223", "category": "Electronics", "product": "4K Monitor", "quantity": 2, "unit_price": 399.50, "price": 799.00, "status": "completed", "order_date": "2023-10-25 09:15"},
-        {"order_id": "ORD-1005", "customer_id": "CUST-441", "category": "Accessories", "product": "USB-C Hub", "quantity": 3, "unit_price": 45.00, "price": 135.00, "status": "completed", "order_date": "2023-10-25 10:30"},
-        {"order_id": "ORD-1006", "customer_id": "CUST-882", "category": "Software", "product": "IDE License 1Yr", "quantity": 1, "unit_price": 199.00, "price": 199.00, "status": "pending", "order_date": "2023-10-25 11:45"},
-        {"order_id": "ORD-1007", "customer_id": "CUST-303", "category": "Accessories", "product": "Webcam 1080p", "quantity": 2, "unit_price": 59.99, "price": 119.98, "status": "completed", "order_date": "2023-10-25 14:10"},
-        {"order_id": "ORD-1008", "customer_id": "CUST-612", "category": "Electronics", "product": "Noise-Cancel Pods", "quantity": 1, "unit_price": 179.99, "price": 179.99, "status": "completed", "order_date": "2023-10-26 11:05"},
-        {"order_id": "ORD-1009", "customer_id": "CUST-104", "category": "Furniture", "product": "Standing Desk", "quantity": 1, "unit_price": 450.00, "price": 450.00, "status": "completed", "order_date": "2023-10-26 13:22"},
-        {"order_id": "ORD-1010", "customer_id": "CUST-774", "category": "Electronics", "product": "USB Mic", "quantity": 1, "unit_price": 89.99, "price": 89.99, "status": "completed", "order_date": "2023-10-26 16:40"},
-    ]),
-    "Customers": pd.DataFrame([
-        {"customer_id": "CUST-101", "name": "Alice Johnson", "email": "alice.j@example.com", "region": "North", "lifetime_spend": 1240.00},
-        {"customer_id": "CUST-104", "name": "Diana Prince", "email": "diana.prince@example.com", "region": "North", "lifetime_spend": 450.00},
-        {"customer_id": "CUST-105", "name": "Bruce Wayne", "email": "bruce.w@example.com", "region": "East", "lifetime_spend": 3400.00},
-        {"customer_id": "CUST-223", "name": "Clark Kent", "email": "clark.k@example.com", "region": "West", "lifetime_spend": 950.00},
-        {"customer_id": "CUST-842", "name": "Barry Allen", "email": "barry.a@example.com", "region": "Central", "lifetime_spend": 620.00},
-    ])
+    "Orders": pd.DataFrame(
+        [
+            {
+                "order_id": "ORD-1001",
+                "customer_id": "CUST-842",
+                "category": "Electronics",
+                "product": "Pro Keyboard",
+                "quantity": 2,
+                "unit_price": 149.99,
+                "price": 299.98,
+                "status": "completed",
+                "order_date": "2023-10-24 14:32",
+            },
+            {
+                "order_id": "ORD-1002",
+                "customer_id": "CUST-911",
+                "category": "Accessories",
+                "product": "Mousepad XL",
+                "quantity": 1,
+                "unit_price": 29.99,
+                "price": 29.99,
+                "status": "completed",
+                "order_date": "2023-10-24 15:01",
+            },
+            {
+                "order_id": "ORD-1003",
+                "customer_id": "CUST-105",
+                "category": "Furniture",
+                "product": "Ergo Chair",
+                "quantity": 1,
+                "unit_price": 549.00,
+                "price": 549.00,
+                "status": "cancelled",
+                "order_date": "2023-10-24 16:12",
+            },
+            {
+                "order_id": "ORD-1004",
+                "customer_id": "CUST-223",
+                "category": "Electronics",
+                "product": "4K Monitor",
+                "quantity": 2,
+                "unit_price": 399.50,
+                "price": 799.00,
+                "status": "completed",
+                "order_date": "2023-10-25 09:15",
+            },
+            {
+                "order_id": "ORD-1005",
+                "customer_id": "CUST-441",
+                "category": "Accessories",
+                "product": "USB-C Hub",
+                "quantity": 3,
+                "unit_price": 45.00,
+                "price": 135.00,
+                "status": "completed",
+                "order_date": "2023-10-25 10:30",
+            },
+            {
+                "order_id": "ORD-1006",
+                "customer_id": "CUST-882",
+                "category": "Software",
+                "product": "IDE License 1Yr",
+                "quantity": 1,
+                "unit_price": 199.00,
+                "price": 199.00,
+                "status": "pending",
+                "order_date": "2023-10-25 11:45",
+            },
+            {
+                "order_id": "ORD-1007",
+                "customer_id": "CUST-303",
+                "category": "Accessories",
+                "product": "Webcam 1080p",
+                "quantity": 2,
+                "unit_price": 59.99,
+                "price": 119.98,
+                "status": "completed",
+                "order_date": "2023-10-25 14:10",
+            },
+            {
+                "order_id": "ORD-1008",
+                "customer_id": "CUST-612",
+                "category": "Electronics",
+                "product": "Noise-Cancel Pods",
+                "quantity": 1,
+                "unit_price": 179.99,
+                "price": 179.99,
+                "status": "completed",
+                "order_date": "2023-10-26 11:05",
+            },
+            {
+                "order_id": "ORD-1009",
+                "customer_id": "CUST-104",
+                "category": "Furniture",
+                "product": "Standing Desk",
+                "quantity": 1,
+                "unit_price": 450.00,
+                "price": 450.00,
+                "status": "completed",
+                "order_date": "2023-10-26 13:22",
+            },
+            {
+                "order_id": "ORD-1010",
+                "customer_id": "CUST-774",
+                "category": "Electronics",
+                "product": "USB Mic",
+                "quantity": 1,
+                "unit_price": 89.99,
+                "price": 89.99,
+                "status": "completed",
+                "order_date": "2023-10-26 16:40",
+            },
+        ]
+    ),
+    "Customers": pd.DataFrame(
+        [
+            {
+                "customer_id": "CUST-101",
+                "name": "Alice Johnson",
+                "email": "alice.j@example.com",
+                "region": "North",
+                "lifetime_spend": 1240.00,
+            },
+            {
+                "customer_id": "CUST-104",
+                "name": "Diana Prince",
+                "email": "diana.prince@example.com",
+                "region": "North",
+                "lifetime_spend": 450.00,
+            },
+            {
+                "customer_id": "CUST-105",
+                "name": "Bruce Wayne",
+                "email": "bruce.w@example.com",
+                "region": "East",
+                "lifetime_spend": 3400.00,
+            },
+            {
+                "customer_id": "CUST-223",
+                "name": "Clark Kent",
+                "email": "clark.k@example.com",
+                "region": "West",
+                "lifetime_spend": 950.00,
+            },
+            {
+                "customer_id": "CUST-842",
+                "name": "Barry Allen",
+                "email": "barry.a@example.com",
+                "region": "Central",
+                "lifetime_spend": 620.00,
+            },
+        ]
+    ),
 }
 
 # Session State Initialization
@@ -218,6 +353,7 @@ if "api_key" not in st.session_state:
 if "cached_sheets_list" not in st.session_state:
     st.session_state.cached_sheets_list = list(DEFAULT_DATASETS.keys())
 
+
 # Backend API Helper Functions
 def check_backend_health(base_url: str, api_key: str) -> Dict[str, Any]:
     """Check if FastAPI gateway is accessible and measure latency."""
@@ -233,6 +369,7 @@ def check_backend_health(base_url: str, api_key: str) -> Dict[str, Any]:
     except Exception:
         return {"online": False, "error": "Backend unavailable"}
 
+
 def fetch_sheet_names_from_backend(base_url: str, api_key: str) -> List[str]:
     """Retrieve available sheet names from /sheets."""
     headers = {"X-API-Key": api_key} if api_key else {}
@@ -244,7 +381,10 @@ def fetch_sheet_names_from_backend(base_url: str, api_key: str) -> List[str]:
         pass
     return list(st.session_state.sheet_data.keys())
 
-def fetch_sheet_data_from_backend(base_url: str, sheet_name: str, api_key: str) -> Optional[pd.DataFrame]:
+
+def fetch_sheet_data_from_backend(
+    base_url: str, sheet_name: str, api_key: str
+) -> Optional[pd.DataFrame]:
     """Fetch live sheet rows from /sheets/{sheet_name}/data."""
     headers = {"X-API-Key": api_key} if api_key else {}
     try:
@@ -257,21 +397,41 @@ def fetch_sheet_data_from_backend(base_url: str, sheet_name: str, api_key: str) 
         pass
     return None
 
+
 def connect_external_sheet(base_url: str, sheet_url: str, api_key: str) -> Dict[str, Any]:
     """Connect an external Google Sheet URL via /sheets/connect."""
-    headers = {"Content-Type": "application/json", "X-API-Key": api_key} if api_key else {"Content-Type": "application/json"}
+    headers = (
+        {"Content-Type": "application/json", "X-API-Key": api_key}
+        if api_key
+        else {"Content-Type": "application/json"}
+    )
     try:
-        resp = requests.post(f"{base_url}/sheets/connect", headers=headers, json={"sheet_url": sheet_url}, timeout=10.0)
+        resp = requests.post(
+            f"{base_url}/sheets/connect",
+            headers=headers,
+            json={"sheet_url": sheet_url},
+            timeout=10.0,
+        )
         if resp.status_code == 200:
             return {"success": True, "data": resp.json()}
         else:
-            return {"success": False, "error": resp.json().get("detail", f"HTTP {resp.status_code}")}
+            return {
+                "success": False,
+                "error": resp.json().get("detail", f"HTTP {resp.status_code}"),
+            }
     except Exception:
         return {"success": False, "error": "Could not reach the backend."}
 
-def send_chat_query(base_url: str, message: str, sheet_name: str, session_id: str, api_key: str) -> Dict[str, Any]:
+
+def send_chat_query(
+    base_url: str, message: str, sheet_name: str, session_id: str, api_key: str
+) -> Dict[str, Any]:
     """Send user query to /chat."""
-    headers = {"Content-Type": "application/json", "X-API-Key": api_key} if api_key else {"Content-Type": "application/json"}
+    headers = (
+        {"Content-Type": "application/json", "X-API-Key": api_key}
+        if api_key
+        else {"Content-Type": "application/json"}
+    )
     payload = {
         "message": message,
         "sheet_name": sheet_name,
@@ -283,10 +443,18 @@ def send_chat_query(base_url: str, message: str, sheet_name: str, session_id: st
             return resp.json()
         elif resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After", "60")
-            return {"answer": f"⏳ Rate limit reached. Please wait {retry_after} seconds before sending another message.", "pending_action": None, "tools_used": []}
+            return {
+                "answer": f"⏳ Rate limit reached. Please wait {retry_after} seconds before sending another message.",
+                "pending_action": None,
+                "tools_used": [],
+            }
         else:
             detail = resp.json().get("detail", resp.text)
-            return {"answer": f"⚠️ Server Error ({resp.status_code}): {detail}", "pending_action": None, "tools_used": []}
+            return {
+                "answer": f"⚠️ Server Error ({resp.status_code}): {detail}",
+                "pending_action": None,
+                "tools_used": [],
+            }
     except Exception:
         return {
             "answer": "The backend is unavailable. No query was executed.",
@@ -295,11 +463,14 @@ def send_chat_query(base_url: str, message: str, sheet_name: str, session_id: st
             "backend_unavailable": True,
         }
 
+
 def confirm_pending_action(base_url: str, action_id: str, api_key: str) -> Dict[str, Any]:
     """Confirm a staged mutation via POST /actions/{id}/confirm."""
     headers = {"X-API-Key": api_key} if api_key else {}
     try:
-        resp = requests.post(f"{base_url}/actions/{action_id}/confirm", headers=headers, timeout=10.0)
+        resp = requests.post(
+            f"{base_url}/actions/{action_id}/confirm", headers=headers, timeout=10.0
+        )
         if resp.status_code == 200:
             return {"success": True, "result": resp.json()}
         else:
@@ -307,6 +478,7 @@ def confirm_pending_action(base_url: str, action_id: str, api_key: str) -> Dict[
             return {"success": False, "error": detail}
     except Exception:
         return {"success": False, "error": "Could not reach the backend."}
+
 
 def reject_pending_action(base_url: str, action_id: str, api_key: str) -> Dict[str, Any]:
     """Reject a staged mutation via POST /actions/{id}/reject."""
@@ -316,6 +488,7 @@ def reject_pending_action(base_url: str, action_id: str, api_key: str) -> Dict[s
         return {"success": resp.status_code == 200}
     except Exception:
         return {"success": False, "error": "Could not reach the backend."}
+
 
 def get_backend_metrics(base_url: str, api_key: str) -> Dict[str, Any]:
     """Fetch live operational metrics from /metrics."""
@@ -334,6 +507,7 @@ def get_backend_metrics(base_url: str, api_key: str) -> Dict[str, Any]:
         "actions": {},
     }
 
+
 # SIDEBAR: Backend Connectivity, Sheet Connector, & Controls
 with st.sidebar:
     st.markdown("### 📊 SheetSense AI")
@@ -342,19 +516,32 @@ with st.sidebar:
 
     # 1. Backend Gateway Configuration & Health Telemetry
     st.markdown("#### 🔌 Backend API Gateway")
-    backend_url_input = st.text_input("FastAPI Base URL", value=st.session_state.backend_url, help="Address of the FastAPI server")
+    backend_url_input = st.text_input(
+        "FastAPI Base URL", value=st.session_state.backend_url, help="Address of the FastAPI server"
+    )
     st.session_state.backend_url = backend_url_input.rstrip("/")
 
-    api_key_input = st.text_input("API Key (X-API-Key)", value=st.session_state.api_key, type="password", help="Secret API key for authentication")
+    api_key_input = st.text_input(
+        "API Key (X-API-Key)",
+        value=st.session_state.api_key,
+        type="password",
+        help="Secret API key for authentication",
+    )
     st.session_state.api_key = api_key_input
 
     # Health Check Ping
     health_info = check_backend_health(st.session_state.backend_url, st.session_state.api_key)
     if health_info.get("online"):
         lat = health_info["latency_ms"]
-        st.markdown(f'<div class="status-pill status-online">🟢 Gateway Online ({lat}ms)</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="status-pill status-online">🟢 Gateway Online ({lat}ms)</div>',
+            unsafe_allow_html=True,
+        )
     else:
-        st.markdown('<div class="status-pill status-offline">Backend unavailable</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="status-pill status-offline">Backend unavailable</div>',
+            unsafe_allow_html=True,
+        )
         st.caption("No queries or mutations will be simulated. Start FastAPI and retry.")
 
     st.markdown("---")
@@ -366,15 +553,19 @@ with st.sidebar:
         "External Google Sheet URL",
         value=default_env_sheet,
         placeholder="https://docs.google.com/spreadsheets/d/.../edit",
-        help="Paste a live Google Sheet URL to load and query with SheetSense AI"
+        help="Paste a live Google Sheet URL to load and query with SheetSense AI",
     )
-    
+
     col_conn1, col_conn2 = st.columns([1, 1])
     with col_conn1:
         if st.button("Connect Sheet", use_container_width=True):
             if sheet_url_input.strip():
                 with st.spinner("Connecting to Google Sheet..."):
-                    res = connect_external_sheet(st.session_state.backend_url, sheet_url_input.strip(), st.session_state.api_key)
+                    res = connect_external_sheet(
+                        st.session_state.backend_url,
+                        sheet_url_input.strip(),
+                        st.session_state.api_key,
+                    )
                     if res["success"]:
                         st.success("Connected successfully!")
                         sheets = res["data"].get("sheets", [])
@@ -390,20 +581,30 @@ with st.sidebar:
     with col_conn2:
         if st.button("🔄 Reload Sheets", use_container_width=True):
             if health_info.get("online"):
-                sheets = fetch_sheet_names_from_backend(st.session_state.backend_url, st.session_state.api_key)
+                sheets = fetch_sheet_names_from_backend(
+                    st.session_state.backend_url, st.session_state.api_key
+                )
                 if sheets:
                     st.session_state.cached_sheets_list = sheets
             st.rerun()
 
     # Active Sheet Selector
-    available_sheets = st.session_state.cached_sheets_list or list(st.session_state.sheet_data.keys())
-    current_idx = available_sheets.index(st.session_state.active_sheet) if st.session_state.active_sheet in available_sheets else 0
+    available_sheets = st.session_state.cached_sheets_list or list(
+        st.session_state.sheet_data.keys()
+    )
+    current_idx = (
+        available_sheets.index(st.session_state.active_sheet)
+        if st.session_state.active_sheet in available_sheets
+        else 0
+    )
     selected_sheet = st.selectbox("Active Worksheet", available_sheets, index=current_idx)
     if selected_sheet != st.session_state.active_sheet:
         st.session_state.active_sheet = selected_sheet
         # Try fetching live data from backend for this sheet
         if health_info.get("online"):
-            live_df = fetch_sheet_data_from_backend(st.session_state.backend_url, selected_sheet, st.session_state.api_key)
+            live_df = fetch_sheet_data_from_backend(
+                st.session_state.backend_url, selected_sheet, st.session_state.api_key
+            )
             if live_df is not None:
                 st.session_state.sheet_data[selected_sheet] = live_df
         st.rerun()
@@ -413,7 +614,7 @@ with st.sidebar:
     # 3. Session & Conversation Memory Management
     st.markdown("#### 🧠 Session Memory")
     st.text_input("Session ID", value=st.session_state.session_id, disabled=True)
-    
+
     col_sess1, col_sess2 = st.columns([1, 1])
     with col_sess1:
         if st.button("New Session", use_container_width=True):
@@ -453,61 +654,82 @@ active_sheet_html = html.escape(str(st.session_state.active_sheet))
 col_h1, col_h2 = st.columns([3, 1])
 with col_h1:
     st.markdown(f"## 📊 SheetSense AI Workspace — `{st.session_state.active_sheet}`")
-    st.caption("Natural-language conversational reasoning, isolated spreadsheet write execution, and real-time visual analytics.")
+    st.caption(
+        "Natural-language conversational reasoning, isolated spreadsheet write execution, and real-time visual analytics."
+    )
 with col_h2:
-    backend_status_text = "🟢 Connected (FastAPI)" if health_info.get("online") else "🟡 Local Direct Engine"
-    st.markdown(f"<div style='text-align: right; padding-top: 10px;'><span class='status-pill status-online'>{backend_status_text}</span></div>", unsafe_allow_html=True)
+    backend_status_text = (
+        "🟢 Connected (FastAPI)" if health_info.get("online") else "🟡 Local Direct Engine"
+    )
+    st.markdown(
+        f"<div style='text-align: right; padding-top: 10px;'><span class='status-pill status-online'>{backend_status_text}</span></div>",
+        unsafe_allow_html=True,
+    )
 
 # Top 4 KPI Metrics
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 with kpi1:
-    st.markdown(f"""
+    st.markdown(
+        f"""
     <div class="metric-card">
         <div class="metric-label">Active Sheet Rows</div>
         <div class="metric-value">{total_rows}</div>
         <div class="metric-sub">Worksheet: {active_sheet_html}</div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 with kpi2:
     conf_count = metrics_data.get("actions", {}).get("confirmed", 0)
-    st.markdown(f"""
+    st.markdown(
+        f"""
     <div class="metric-card">
         <div class="metric-label">Confirmation Gate</div>
         <div class="metric-value">{conf_count} Confirmed</div>
         <div class="metric-sub">0 Direct Unsafe Writes</div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 with kpi3:
     agent_state = "Online" if health_info.get("online") else "Unavailable"
-    st.markdown(f"""
+    st.markdown(
+        f"""
     <div class="metric-card">
         <div class="metric-label">Agent Gateway</div>
         <div class="metric-value">{agent_state}</div>
         <div class="metric-sub">Live backend state</div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 with kpi4:
     metrics_state = "Live" if metrics_data.get("available", True) else "Unavailable"
-    st.markdown(f"""
+    st.markdown(
+        f"""
     <div class="metric-card">
         <div class="metric-label">Operational Metrics</div>
         <div class="metric-value">{metrics_state}</div>
         <div class="metric-sub">No simulated telemetry</div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # Core Navigation Tabs
-tab_chat, tab_data, tab_analytics, tab_telemetry = st.tabs([
-    "💬 Conversational Agent",
-    "📋 Interactive Data Grid",
-    "📈 Visual Analytics & Insights",
-    "⚙️ System Telemetry & Eval",
-])
+tab_chat, tab_data, tab_analytics, tab_telemetry = st.tabs(
+    [
+        "💬 Conversational Agent",
+        "📋 Interactive Data Grid",
+        "📈 Visual Analytics & Insights",
+        "⚙️ System Telemetry & Eval",
+    ]
+)
 
 # TAB 1: Conversational Agent (Chat) & Human-in-the-Loop Confirmation Gate
 with tab_chat:
@@ -536,7 +758,7 @@ with tab_chat:
         target = act.get("target", {})
         change = act.get("proposed_change", {})
         action_id = act.get("action_id", "unknown")
-        
+
         target_sheet = target.get("sheet_name", st.session_state.active_sheet)
         id_col = target.get("id_column", "ID")
         id_val = target.get("id_value", "Unknown")
@@ -557,7 +779,8 @@ with tab_chat:
                 cur_val = match.iloc[0][upd_col]
         safe_cur_val = html.escape(str(cur_val))
 
-        st.markdown(f"""
+        st.markdown(
+            f"""
         <div class="gate-card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                 <span style="color: #fbbf24; font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px;">
@@ -576,25 +799,40 @@ with tab_chat:
                 <div><span style="color: #9ca3af;">Proposed Value:</span> <strong style="color: #34d399;">{safe_new_val}</strong></div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """,
+            unsafe_allow_html=True,
+        )
 
         gate_col1, gate_col2, gate_col3 = st.columns([2, 2, 4])
         with gate_col1:
             if st.button("✅ Confirm Mutation", type="primary", use_container_width=True):
                 with st.spinner("Executing via isolated write gateway..."):
-                    res = confirm_pending_action(st.session_state.backend_url, action_id, st.session_state.api_key)
+                    res = confirm_pending_action(
+                        st.session_state.backend_url, action_id, st.session_state.api_key
+                    )
                     if res["success"]:
                         st.success(f"Mutation confirmed! Row `{id_val}` updated.")
                         # Update local dataframe if present
-                        if not active_df.empty and id_col in active_df.columns and upd_col in active_df.columns:
+                        if (
+                            not active_df.empty
+                            and id_col in active_df.columns
+                            and upd_col in active_df.columns
+                        ):
                             mask = active_df[id_col].astype(str) == str(id_val)
                             st.session_state.sheet_data[target_sheet].loc[mask, upd_col] = new_val
-                        st.session_state.chat_history.append({
-                            "role": "assistant",
-                            "content": f"✅ **Confirmed & Executed**: Updated `{upd_col}` in `{target_sheet}` for row `{id_val}` to `{new_val}`.",
-                            "tools_used": ["sheets_writer"],
-                            "intermediate_steps": [{"tool": "sheets_writer", "observation": "Executed via physical write isolation gateway"}],
-                        })
+                        st.session_state.chat_history.append(
+                            {
+                                "role": "assistant",
+                                "content": f"✅ **Confirmed & Executed**: Updated `{upd_col}` in `{target_sheet}` for row `{id_val}` to `{new_val}`.",
+                                "tools_used": ["sheets_writer"],
+                                "intermediate_steps": [
+                                    {
+                                        "tool": "sheets_writer",
+                                        "observation": "Executed via physical write isolation gateway",
+                                    }
+                                ],
+                            }
+                        )
                         st.session_state.pending_action = None
                         st.rerun()
                     else:
@@ -602,13 +840,17 @@ with tab_chat:
 
         with gate_col2:
             if st.button("❌ Reject Mutation", use_container_width=True):
-                reject_pending_action(st.session_state.backend_url, action_id, st.session_state.api_key)
-                st.session_state.chat_history.append({
-                    "role": "assistant",
-                    "content": f"❌ **Mutation Rejected**: Action `{action_id[:8]}...` was cancelled. No changes made to Google Sheets.",
-                    "tools_used": [],
-                    "intermediate_steps": [],
-                })
+                reject_pending_action(
+                    st.session_state.backend_url, action_id, st.session_state.api_key
+                )
+                st.session_state.chat_history.append(
+                    {
+                        "role": "assistant",
+                        "content": f"❌ **Mutation Rejected**: Action `{action_id[:8]}...` was cancelled. No changes made to Google Sheets.",
+                        "tools_used": [],
+                        "intermediate_steps": [],
+                    }
+                )
                 st.session_state.pending_action = None
                 st.rerun()
 
@@ -618,13 +860,18 @@ with tab_chat:
             st.markdown(msg["content"])
             # Render tool trace accordion if tools were used
             if msg.get("tools_used"):
-                with st.expander(f"🔍 Reasoning Trace ({len(msg['tools_used'])} tool calls)", expanded=False):
+                with st.expander(
+                    f"🔍 Reasoning Trace ({len(msg['tools_used'])} tool calls)", expanded=False
+                ):
                     for step in msg.get("intermediate_steps", []):
                         st.markdown(f"**Tool:** `{step.get('tool')}`")
                         st.code(step.get("observation", ""))
 
     # Process Input from Chat Input or Quick Prompts
-    user_input = st.chat_input("Ask a question, request summary, or propose a spreadsheet update...") or quick_query
+    user_input = (
+        st.chat_input("Ask a question, request summary, or propose a spreadsheet update...")
+        or quick_query
+    )
     if user_input:
         # Append User Message
         st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -649,17 +896,21 @@ with tab_chat:
 
                 st.markdown(answer_text)
                 if tools_used:
-                    with st.expander(f"🔍 Reasoning Trace ({len(tools_used)} tool calls)", expanded=False):
+                    with st.expander(
+                        f"🔍 Reasoning Trace ({len(tools_used)} tool calls)", expanded=False
+                    ):
                         for step in raw_steps:
                             st.markdown(f"**Tool:** `{step.get('tool')}`")
-                            st.code(step.get('observation', ''))
+                            st.code(step.get("observation", ""))
 
-                st.session_state.chat_history.append({
-                    "role": "assistant",
-                    "content": answer_text,
-                    "tools_used": tools_used,
-                    "intermediate_steps": raw_steps,
-                })
+                st.session_state.chat_history.append(
+                    {
+                        "role": "assistant",
+                        "content": answer_text,
+                        "tools_used": tools_used,
+                        "intermediate_steps": raw_steps,
+                    }
+                )
 
                 if pending:
                     st.session_state.pending_action = pending
@@ -668,14 +919,18 @@ with tab_chat:
 # TAB 2: Interactive Data Grid & Sheet Explorer
 with tab_data:
     st.markdown(f"### 📋 Worksheet Data — `{st.session_state.active_sheet}`")
-    
+
     if active_df.empty:
         st.info("No rows available in this worksheet or sheet is empty.")
     else:
         # Search & Column Filter Bar
         grid_c1, grid_c2 = st.columns([2, 3])
         with grid_c1:
-            search_query = st.text_input("🔍 Filter records", placeholder="Type to filter across all columns...", key="grid_search")
+            search_query = st.text_input(
+                "🔍 Filter records",
+                placeholder="Type to filter across all columns...",
+                key="grid_search",
+            )
         with grid_c2:
             all_cols = list(active_df.columns)
             selected_cols = st.multiselect("Visible Columns", all_cols, default=all_cols)
@@ -683,11 +938,13 @@ with tab_data:
         # Apply Search Filter
         filtered_df = active_df[selected_cols] if selected_cols else active_df
         if search_query.strip():
-            mask = filtered_df.astype(str).apply(lambda row: row.str.contains(search_query.strip(), case=False).any(), axis=1)
+            mask = filtered_df.astype(str).apply(
+                lambda row: row.str.contains(search_query.strip(), case=False).any(), axis=1
+            )
             filtered_df = filtered_df[mask]
 
         st.caption(f"Showing **{len(filtered_df)}** of **{len(active_df)}** records")
-        
+
         # Interactive DataFrame
         st.dataframe(
             filtered_df,
@@ -704,10 +961,12 @@ with tab_data:
                 data=csv_data,
                 file_name=f"{st.session_state.active_sheet}.csv",
                 mime="text/csv",
-                use_container_width=True
+                use_container_width=True,
             )
         with dl_c2:
-            st.caption(f"Memory footprint: ~{filtered_df.memory_usage(deep=True).sum() / 1024:.1f} KB &bull; Zero formula execution vulnerabilities")
+            st.caption(
+                f"Memory footprint: ~{filtered_df.memory_usage(deep=True).sum() / 1024:.1f} KB &bull; Zero formula execution vulnerabilities"
+            )
 
 # TAB 3: Visual Analytics & Insights (Plotly Charts + Custom Studio)
 with tab_analytics:
@@ -722,21 +981,35 @@ with tab_analytics:
         for c in active_df.columns:
             if c not in numeric_cols and active_df[c].dtype == object:
                 try:
-                    pd.to_numeric(active_df[c].astype(str).str.replace("$", "").str.replace(",", ""))
+                    pd.to_numeric(
+                        active_df[c].astype(str).str.replace("$", "").str.replace(",", "")
+                    )
                     numeric_cols.append(c)
                 except Exception:
                     pass
 
-        categorical_cols = [c for c in active_df.columns if c not in numeric_cols and c != "order_date"]
+        categorical_cols = [
+            c for c in active_df.columns if c not in numeric_cols and c != "order_date"
+        ]
 
         # 1. High-Level Summary Statistics
         st.markdown("#### 📌 Key Performance Indicators")
         stat_c1, stat_c2, stat_c3, stat_c4 = st.columns(4)
-        
+
         # Look for revenue/price column
-        rev_col = next((c for c in ["price", "total_price", "revenue", "amount", "lifetime_spend"] if c in active_df.columns), None)
+        rev_col = next(
+            (
+                c
+                for c in ["price", "total_price", "revenue", "amount", "lifetime_spend"]
+                if c in active_df.columns
+            ),
+            None,
+        )
         if rev_col:
-            val_series = pd.to_numeric(active_df[rev_col].astype(str).str.replace("$", "").str.replace(",", ""), errors="coerce")
+            val_series = pd.to_numeric(
+                active_df[rev_col].astype(str).str.replace("$", "").str.replace(",", ""),
+                errors="coerce",
+            )
             total_rev = val_series.sum()
             avg_rev = val_series.mean()
         else:
@@ -744,11 +1017,17 @@ with tab_analytics:
             avg_rev = 0
 
         with stat_c1:
-            st.metric("Total Volume / Sum", f"${total_rev:,.2f}" if rev_col else f"{len(active_df)} rows")
+            st.metric(
+                "Total Volume / Sum", f"${total_rev:,.2f}" if rev_col else f"{len(active_df)} rows"
+            )
         with stat_c2:
             st.metric("Average per Record", f"${avg_rev:,.2f}" if rev_col else "N/A")
         with stat_c3:
-            cat_count = len(active_df["category"].unique()) if "category" in active_df.columns else len(active_df.columns)
+            cat_count = (
+                len(active_df["category"].unique())
+                if "category" in active_df.columns
+                else len(active_df.columns)
+            )
             st.metric("Categories / Dimensions", f"{cat_count}")
         with stat_c4:
             completed_pct = "100%"
@@ -839,30 +1118,45 @@ with tab_analytics:
 
         # 3. Interactive Custom Chart Studio
         st.markdown("#### 🎨 Custom Chart Studio")
-        st.caption("Select dimensions and measures to generate custom interactive visualizations on the fly.")
-        
+        st.caption(
+            "Select dimensions and measures to generate custom interactive visualizations on the fly."
+        )
+
         studio_c1, studio_c2, studio_c3 = st.columns(3)
         with studio_c1:
             x_axis = st.selectbox("X-Axis (Dimension)", active_df.columns, index=0)
         with studio_c2:
             num_or_all = numeric_cols if numeric_cols else list(active_df.columns)
-            y_axis = st.selectbox("Y-Axis (Measure)", num_or_all, index=min(1, len(num_or_all)-1))
+            y_axis = st.selectbox("Y-Axis (Measure)", num_or_all, index=min(1, len(num_or_all) - 1))
         with studio_c3:
-            chart_type = st.selectbox("Chart Type", ["Bar Chart", "Line Chart", "Scatter Plot", "Histogram", "Pie Chart"])
+            chart_type = st.selectbox(
+                "Chart Type", ["Bar Chart", "Line Chart", "Scatter Plot", "Histogram", "Pie Chart"]
+            )
 
         if st.button("Generate Custom Chart", type="primary"):
             try:
                 if chart_type == "Bar Chart":
-                    custom_fig = px.bar(active_df, x=x_axis, y=y_axis, template="plotly_dark", color=x_axis)
+                    custom_fig = px.bar(
+                        active_df, x=x_axis, y=y_axis, template="plotly_dark", color=x_axis
+                    )
                 elif chart_type == "Line Chart":
                     custom_fig = px.line(active_df, x=x_axis, y=y_axis, template="plotly_dark")
                 elif chart_type == "Scatter Plot":
-                    custom_fig = px.scatter(active_df, x=x_axis, y=y_axis, color=x_axis, template="plotly_dark", size_max=15)
+                    custom_fig = px.scatter(
+                        active_df,
+                        x=x_axis,
+                        y=y_axis,
+                        color=x_axis,
+                        template="plotly_dark",
+                        size_max=15,
+                    )
                 elif chart_type == "Histogram":
                     custom_fig = px.histogram(active_df, x=y_axis, template="plotly_dark", nbins=15)
                 elif chart_type == "Pie Chart":
-                    custom_fig = px.pie(active_df, names=x_axis, values=y_axis, template="plotly_dark", hole=0.35)
-                
+                    custom_fig = px.pie(
+                        active_df, names=x_axis, values=y_axis, template="plotly_dark", hole=0.35
+                    )
+
                 custom_fig.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=380)
                 st.plotly_chart(custom_fig, use_container_width=True)
             except Exception as e:
@@ -871,7 +1165,9 @@ with tab_analytics:
 # TAB 4: Telemetry, Observability & Evaluation Benchmark Runner
 with tab_telemetry:
     st.markdown("### ⚙️ Operational Telemetry & Evaluation Scorecard")
-    st.caption("Real-time audit telemetry, tool usage distribution, latency percentiles, and benchmark test verification.")
+    st.caption(
+        "Real-time audit telemetry, tool usage distribution, latency percentiles, and benchmark test verification."
+    )
 
     t_col1, t_col2 = st.columns(2)
 
@@ -881,8 +1177,12 @@ with tab_telemetry:
         tool_usage = metrics_data.get("tool_usage", {})
         if tool_usage:
             tool_df = pd.DataFrame(list(tool_usage.items()), columns=["Tool", "Invocations"])
-            fig_tools = px.bar(tool_df, x="Tool", y="Invocations", color="Tool", template="plotly_dark")
-            fig_tools.update_layout(margin=dict(l=20, r=20, t=30, b=20), height=280, showlegend=False)
+            fig_tools = px.bar(
+                tool_df, x="Tool", y="Invocations", color="Tool", template="plotly_dark"
+            )
+            fig_tools.update_layout(
+                margin=dict(l=20, r=20, t=30, b=20), height=280, showlegend=False
+            )
             st.plotly_chart(fig_tools, use_container_width=True)
         else:
             st.info("No tool telemetry recorded yet.")
@@ -893,7 +1193,14 @@ with tab_telemetry:
         avg_lat = metrics_data.get("avg_latency_ms", {})
         if avg_lat:
             lat_df = pd.DataFrame(list(avg_lat.items()), columns=["Tool", "Latency (ms)"])
-            fig_lat = px.bar(lat_df, x="Tool", y="Latency (ms)", color="Latency (ms)", color_continuous_scale="Teal", template="plotly_dark")
+            fig_lat = px.bar(
+                lat_df,
+                x="Tool",
+                y="Latency (ms)",
+                color="Latency (ms)",
+                color_continuous_scale="Teal",
+                template="plotly_dark",
+            )
             fig_lat.update_layout(margin=dict(l=20, r=20, t=30, b=20), height=280)
             st.plotly_chart(fig_lat, use_container_width=True)
         else:
@@ -909,24 +1216,57 @@ with tab_telemetry:
     """)
 
     scorecard_data = [
-        {"Metric": "Benchmark Routing Accuracy (BRA)", "Target": ">= 90.0%", "Verified Score": "100.0% (30/30)", "Status": "✅ Exceeds Target"},
-        {"Metric": "Execution Accuracy (EA)", "Target": ">= 85.0%", "Verified Score": "93.3% (28/30)", "Status": "✅ Exceeds Target"},
-        {"Metric": "Confirmation Gate Adherence (CGA)", "Target": "100.0%", "Verified Score": "100.0% (4/4 gated)", "Status": "✅ 0 Direct Writes"},
-        {"Metric": "Injection Block Rate (IBR)", "Target": "100.0%", "Verified Score": "100.0% (4/4 blocked)", "Status": "✅ 0 Code Exploits"},
-        {"Metric": "Median Latency (p50)", "Target": "< 3.0s", "Verified Score": "~2.2 ms", "Status": "✅ Optimal"},
+        {
+            "Metric": "Benchmark Routing Accuracy (BRA)",
+            "Target": ">= 90.0%",
+            "Verified Score": "100.0% (30/30)",
+            "Status": "✅ Exceeds Target",
+        },
+        {
+            "Metric": "Execution Accuracy (EA)",
+            "Target": ">= 85.0%",
+            "Verified Score": "93.3% (28/30)",
+            "Status": "✅ Exceeds Target",
+        },
+        {
+            "Metric": "Confirmation Gate Adherence (CGA)",
+            "Target": "100.0%",
+            "Verified Score": "100.0% (4/4 gated)",
+            "Status": "✅ 0 Direct Writes",
+        },
+        {
+            "Metric": "Injection Block Rate (IBR)",
+            "Target": "100.0%",
+            "Verified Score": "100.0% (4/4 blocked)",
+            "Status": "✅ 0 Code Exploits",
+        },
+        {
+            "Metric": "Median Latency (p50)",
+            "Target": "< 3.0s",
+            "Verified Score": "~2.2 ms",
+            "Status": "✅ Optimal",
+        },
     ]
     st.table(pd.DataFrame(scorecard_data))
 
     if st.button("🚀 Trigger Full Evaluation Suite (/eval/run)", type="primary"):
         with st.spinner("Executing 30 benchmark tasks across RAG-Fusion & Safe Evaluator..."):
             try:
-                headers = {"X-API-Key": st.session_state.api_key} if st.session_state.api_key else {}
-                eval_resp = requests.post(f"{st.session_state.backend_url}/eval/run", headers=headers, timeout=60.0)
+                headers = (
+                    {"X-API-Key": st.session_state.api_key} if st.session_state.api_key else {}
+                )
+                eval_resp = requests.post(
+                    f"{st.session_state.backend_url}/eval/run", headers=headers, timeout=60.0
+                )
                 if eval_resp.status_code == 200:
                     summary = eval_resp.json()
                     st.success("Evaluation run completed successfully!")
                     st.json(summary)
                 else:
-                    st.error(f"Eval run failed with status {eval_resp.status_code}: {eval_resp.text}")
+                    st.error(
+                        f"Eval run failed with status {eval_resp.status_code}: {eval_resp.text}"
+                    )
             except Exception as e:
-                st.warning(f"Could not reach backend /eval/run endpoint: {e}. Run `python eval_harness.py` in terminal.")
+                st.warning(
+                    f"Could not reach backend /eval/run endpoint: {e}. Run `python eval_harness.py` in terminal."
+                )

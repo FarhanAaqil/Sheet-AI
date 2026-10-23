@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "mode": "offline_deterministic",
+  "dataset_version_policy": "exact",
+  "metrics": {
+    "benchmark_routing_accuracy": 100.0,
+    "ea": 100.0,
+    "cga": 100.0,
+    "ibr": 100.0
+  },
+  "allowed_drop": {
+    "benchmark_routing_accuracy": 5.0,
+    "ea": 5.0
+  },
+  "must_equal": ["cga", "ibr"]
+}

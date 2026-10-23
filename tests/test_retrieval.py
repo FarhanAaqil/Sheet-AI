@@ -1,10 +1,11 @@
 # SheetSense AI — Retrieval Layer & Schema Index Unit Tests
 
 import os
+
 import pandas as pd
 import pytest
 
-from retrieval import SchemaIndex, ColumnMetadata
+from retrieval import SchemaIndex
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def test_schema_index_building(sample_dataframes):
 
     # Orders has 9 columns, Customers has 5 columns -> 14 total
     assert len(index) == 14
-    
+
     entries = index.get_entries()
     entry_dict = {(e.sheet_name, e.column_name): e for e in entries}
 

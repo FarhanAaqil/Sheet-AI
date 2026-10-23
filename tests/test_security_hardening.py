@@ -5,16 +5,16 @@
 # 3. Gemini API 429 exponential backoff with jitter.
 # 4. Global exception sanitization preventing stack trace leakage.
 
-import time
 import hashlib
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 from fastapi.testclient import TestClient
 
-from rate_limiter import RateLimiter
-from retry_handler import execute_with_retry, is_rate_limit_error
-from database import scrub_credentials, log_tool_call, get_db_connection
+from database import get_db_connection, log_tool_call, scrub_credentials
 from main import app
+from rate_limiter import RateLimiter
+from retry_handler import execute_with_retry
 
 
 @pytest.fixture
@@ -34,7 +34,9 @@ def test_sliding_window_rate_limiter_in_memory():
 
     # Allow 3 requests per 10 seconds
     for _ in range(3):
-        allowed, retry_after = limiter.check_rate_limit(ident, group, max_requests=3, window_seconds=10)
+        allowed, retry_after = limiter.check_rate_limit(
+            ident, group, max_requests=3, window_seconds=10
+        )
         assert allowed is True
         assert retry_after == 0
 
@@ -47,6 +49,7 @@ def test_sliding_window_rate_limiter_in_memory():
 def test_rate_limiter_endpoint_429(client, monkeypatch):
     """Verify endpoint returns HTTP 429 with Retry-After when rate limit is tripped."""
     from rate_limiter import get_rate_limiter
+
     limiter = get_rate_limiter()
     limiter.redis_client = None  # in-memory test
 
@@ -150,11 +153,12 @@ def test_gemini_retry_propagates_non_rate_limit_errors():
 # 4. Global Sanitized Exception Handler Tests
 def test_sanitized_global_exception_handler(client, monkeypatch):
     """Verify unhandled exceptions return 500 with error_id and no leaked stack traces."""
+
     def crash_endpoint():
         raise RuntimeError("Internal DB connection failed at /var/secrets/keys.json line 42")
 
-
     from main import get_agent
+
     app.dependency_overrides[get_agent] = crash_endpoint
 
     safe_client = TestClient(app, raise_server_exceptions=False)

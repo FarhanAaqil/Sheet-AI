@@ -34,9 +34,7 @@ def test_one_hundred_parallel_confirmations_claim_exactly_once(isolated_db):
     )
 
     def claim(_):
-        return database.claim_pending_action(
-            action_id, "owner", "same-request"
-        )["claim_status"]
+        return database.claim_pending_action(action_id, "owner", "same-request")["claim_status"]
 
     with ThreadPoolExecutor(max_workers=20) as pool:
         outcomes = list(pool.map(claim, range(100)))
@@ -73,9 +71,7 @@ def test_same_session_id_is_isolated_by_principal():
 
     alice = store.get_history("alice", "shared-id")
     bob = store.get_history("bob", "shared-id")
-    assert [message["content"] for message in alice] == [
-        "Alice question", "Alice answer"
-    ]
+    assert [message["content"] for message in alice] == ["Alice question", "Alice answer"]
     assert [message["content"] for message in bob] == ["Bob question", "Bob answer"]
 
 
@@ -91,9 +87,7 @@ def test_connection_registry_prevents_cross_tenant_resolution(isolated_db):
 
     with pytest.raises(PermissionError):
         registry.resolve("tenant-b", connection["connection_id"])
-    resolved, resolved_sheet = registry.resolve(
-        "tenant-a", connection["connection_id"]
-    )
+    resolved, resolved_sheet = registry.resolve("tenant-a", connection["connection_id"])
     assert resolved["principal_id"] == "tenant-a"
     assert resolved_sheet is sheet
 
@@ -152,12 +146,14 @@ def test_join_cardinality_limit_rejects_explosive_output():
     right = pd.DataFrame({"key": ["same"] * 100, "right": range(100)})
     spreadsheet, _ = _spreadsheet_with_frames({"Left": left, "Right": right})
     result = SheetTools(spreadsheet).cross_sheet_join(
-        json.dumps({
-            "sheet1": "Left",
-            "sheet2": "Right",
-            "on_column": "key",
-            "max_output_rows": 1000,
-        })
+        json.dumps(
+            {
+                "sheet1": "Left",
+                "sheet2": "Right",
+                "on_column": "key",
+                "max_output_rows": 1000,
+            }
+        )
     )
     assert "rejected" in result
     assert "10000 rows" in result
@@ -165,12 +161,16 @@ def test_join_cardinality_limit_rejects_explosive_output():
 
 def test_sensitive_schema_values_are_not_indexed():
     index = SchemaIndex()
-    index.build_from_dataframes({
-        "Customers": pd.DataFrame({
-            "email": ["private@example.com"],
-            "region": ["North"],
-        })
-    })
+    index.build_from_dataframes(
+        {
+            "Customers": pd.DataFrame(
+                {
+                    "email": ["private@example.com"],
+                    "region": ["North"],
+                }
+            )
+        }
+    )
     email = next(entry for entry in index.get_entries() if entry.column_name == "email")
     assert email.sensitive is True
     assert email.sample_values == []

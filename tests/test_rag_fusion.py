@@ -1,13 +1,13 @@
 # SheetSense AI — RAG-Fusion Retrieval Unit Tests
 
 import os
+
 import pandas as pd
 import pytest
 
 from retrieval import (
-    SchemaIndex,
-    MultiQueryReformulator,
     RAGFusionRetriever,
+    SchemaIndex,
     format_retrieval_context,
 )
 
@@ -20,10 +20,12 @@ def populated_index():
     customers_df = pd.read_csv(os.path.join(fixtures_dir, "customers.csv"))
 
     index = SchemaIndex()
-    index.build_from_dataframes({
-        "Orders": orders_df,
-        "Customers": customers_df,
-    })
+    index.build_from_dataframes(
+        {
+            "Orders": orders_df,
+            "Customers": customers_df,
+        }
+    )
     return index
 
 

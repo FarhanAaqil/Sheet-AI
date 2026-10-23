@@ -1,17 +1,14 @@
 # SheetSense AI — Session Store Unit Tests
 
-import os
 import json
-import pytest
 from unittest.mock import MagicMock, patch
 
 from session_store import (
-    SessionStore,
-    RedisSessionStore,
-    InMemorySessionStore,
-    get_session_store,
-    SESSION_TTL_SECONDS,
     MAX_TURNS,
+    SESSION_TTL_SECONDS,
+    InMemorySessionStore,
+    RedisSessionStore,
+    get_session_store,
 )
 
 
@@ -53,11 +50,13 @@ def test_redis_session_store_ttl_and_truncation():
 
     def mock_eval(script, key_count, key, index_key, human, ai, max_messages, ttl, sid):
         history = json.loads(storage.get(key, "[]"))
-        history.extend([
-            {"role": "human", "content": human},
-            {"role": "ai", "content": ai},
-        ])
-        storage[key] = json.dumps(history[-int(max_messages):])
+        history.extend(
+            [
+                {"role": "human", "content": human},
+                {"role": "ai", "content": ai},
+            ]
+        )
+        storage[key] = json.dumps(history[-int(max_messages) :])
         return len(history)
 
     mock_redis.set.side_effect = mock_set
@@ -79,9 +78,7 @@ def test_redis_session_store_ttl_and_truncation():
         assert history[1]["role"] == "ai"
 
         # Verify rolling TTL was refreshed on get
-        mock_redis.expire.assert_called_with(
-            f"session:{principal}:{sid}", SESSION_TTL_SECONDS
-        )
+        mock_redis.expire.assert_called_with(f"session:{principal}:{sid}", SESSION_TTL_SECONDS)
 
 
 def test_session_store_factory_local_env(monkeypatch):

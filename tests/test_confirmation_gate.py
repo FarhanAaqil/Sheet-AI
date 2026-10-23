@@ -2,17 +2,15 @@
 # Ensures that NO destructive action can reach Google Sheets write methods
 # without passing through POST /actions/{action_id}/confirm.
 
-import os
-import uuid
 import json
+import uuid
+from unittest.mock import MagicMock
+
 import pytest
-from datetime import datetime, timezone, timedelta
-from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 import database
-import sheets_writer
-from agent import SheetTools, SheetSenseAgent
+from agent import SheetTools
 from main import app, get_agent
 
 
@@ -32,12 +30,12 @@ def mock_spreadsheet():
     ws = MagicMock()
     ws.title = "Orders"
     ws.row_values.return_value = ["OrderID", "Customer", "Price", "Status"]
-    
+
     # Target row mock cell
     mock_cell = MagicMock()
     mock_cell.row = 3
     ws.find.return_value = mock_cell
-    
+
     # Spy methods on writes
     ws.update_cell = MagicMock(return_value={"updated": True})
     ws.update = MagicMock(return_value={"updated": True})
@@ -56,6 +54,7 @@ def mock_spreadsheet():
 @pytest.fixture
 def client(mock_spreadsheet, monkeypatch):
     """FastAPI TestClient with mock agent."""
+
     class MockTools:
         def _refresh_sheet(self, name):
             pass
@@ -63,10 +62,13 @@ def client(mock_spreadsheet, monkeypatch):
     class MockAgent:
         spreadsheet = mock_spreadsheet
         sheet_tools = MockTools()
+
         def resolve_spreadsheet(self, principal_id, connection_id=None):
             return "default", self.spreadsheet
+
         def get_sheet_names(self, principal_id="legacy-admin", connection_id=None):
             return ["Orders"]
+
         def get_sheet_schema(self, sheet_name, principal_id="legacy-admin", connection_id=None):
             return {"sheet_name": "Orders", "columns": ["OrderID", "Customer", "Price", "Status"]}
 
@@ -80,6 +82,7 @@ def client(mock_spreadsheet, monkeypatch):
 
 # Test Cases
 
+
 def test_direct_tool_calls_never_reach_gspread_write_methods(mock_spreadsheet):
     """
     CRITICAL REGRESSION TEST: Calling update_cell or delete_row tools directly MUST NOT
@@ -89,13 +92,15 @@ def test_direct_tool_calls_never_reach_gspread_write_methods(mock_spreadsheet):
     ws = mock_spreadsheet.worksheet("Orders")
 
     # 1. Test update_cell
-    update_input = json.dumps({
-        "sheet_name": "Orders",
-        "id_column": "OrderID",
-        "id_value": "ORD-4471",
-        "update_column": "Price",
-        "new_value": 300,
-    })
+    update_input = json.dumps(
+        {
+            "sheet_name": "Orders",
+            "id_column": "OrderID",
+            "id_value": "ORD-4471",
+            "update_column": "Price",
+            "new_value": 300,
+        }
+    )
     res_upd = st.update_cell(update_input)
 
     # Assert gspread write methods were NEVER called
@@ -110,11 +115,13 @@ def test_direct_tool_calls_never_reach_gspread_write_methods(mock_spreadsheet):
     assert "CONFIRMATION REQUIRED" in res_upd
 
     # 2. Test delete_row
-    delete_input = json.dumps({
-        "sheet_name": "Orders",
-        "id_column": "OrderID",
-        "id_value": "ORD-4471",
-    })
+    delete_input = json.dumps(
+        {
+            "sheet_name": "Orders",
+            "id_column": "OrderID",
+            "id_value": "ORD-4471",
+        }
+    )
     res_del = st.delete_row(delete_input)
 
     # Assert gspread write methods were STILL NEVER called
@@ -248,6 +255,7 @@ def test_operation_matrix_write_isolation_and_confirmation_gates(mock_spreadshee
     - rejected/unsafe operation -> no write occurs, no pending action staged
     """
     from pydantic import ValidationError
+
     from agent import UpdateCellInput
 
     tools = SheetTools(mock_spreadsheet)
@@ -268,24 +276,32 @@ def test_operation_matrix_write_isolation_and_confirmation_gates(mock_spreadshee
     assert tools.last_pending_action is None
 
     # 3. Write -> confirmation required, 0 direct writes before confirmation
-    upd_res = tools.update_cell(json.dumps({
-        "sheet_name": "Orders",
-        "id_column": "OrderID",
-        "id_value": "ORD-1001",
-        "update_column": "Price",
-        "new_value": 299.99,
-    }))
+    upd_res = tools.update_cell(
+        json.dumps(
+            {
+                "sheet_name": "Orders",
+                "id_column": "OrderID",
+                "id_value": "ORD-1001",
+                "update_column": "Price",
+                "new_value": 299.99,
+            }
+        )
+    )
     assert "CONFIRMATION REQUIRED" in upd_res
     assert tools.last_pending_action is not None
     assert tools.last_pending_action["tool_name"] == "update_cell"
     assert ws.update_cell.call_count == 0
 
     # 4. Destructive write -> confirmation required, 0 direct writes before confirmation
-    del_res = tools.delete_row(json.dumps({
-        "sheet_name": "Orders",
-        "id_column": "OrderID",
-        "id_value": "ORD-1001",
-    }))
+    del_res = tools.delete_row(
+        json.dumps(
+            {
+                "sheet_name": "Orders",
+                "id_column": "OrderID",
+                "id_value": "ORD-1001",
+            }
+        )
+    )
     assert "CONFIRMATION REQUIRED" in del_res
     assert tools.last_pending_action is not None
     assert tools.last_pending_action["tool_name"] == "delete_row"

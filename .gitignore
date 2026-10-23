@@ -37,6 +37,13 @@ cache/
 *.db
 *.sqlite3
 __pycache__/
+.coverage
+coverage.json
+coverage.xml
+htmlcov/
+node_modules/
+test-results/
+playwright-report/
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 *.tar

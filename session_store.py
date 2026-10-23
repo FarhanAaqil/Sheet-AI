@@ -3,19 +3,19 @@
 # Backed by Redis to support multi-worker Uvicorn deployments without state loss.
 # Falls back to in-process memory ONLY when ENV=local_no_redis is explicitly set.
 
-import os
 import json
 import logging
+import os
 import secrets
-from contextlib import contextmanager
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from threading import RLock
 from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
 SESSION_TTL_SECONDS = 86400  # 24 hours rolling TTL
-MAX_TURNS = 10               # 10 turns = 20 messages
+MAX_TURNS = 10  # 10 turns = 20 messages
 
 
 class SessionStore(ABC):
@@ -27,9 +27,7 @@ class SessionStore(ABC):
         pass
 
     @abstractmethod
-    def save_turn(
-        self, principal_id: str, session_id: str, human: str, ai: str
-    ) -> None:
+    def save_turn(self, principal_id: str, session_id: str, human: str, ai: str) -> None:
         """Append a completed turn and reset the rolling 24h TTL."""
         pass
 
@@ -65,6 +63,7 @@ class RedisSessionStore(SessionStore):
 
     def __init__(self, redis_url: str, ttl_seconds: int = SESSION_TTL_SECONDS):
         import redis
+
         self.redis_url = redis_url
         self.ttl_seconds = ttl_seconds
         self.client = redis.from_url(redis_url, decode_responses=True)
@@ -89,7 +88,7 @@ class RedisSessionStore(SessionStore):
             messages = json.loads(raw)
             # Refresh rolling TTL on access
             self.client.expire(key, self.ttl_seconds)
-            return messages[- (MAX_TURNS * 2):]
+            return messages[-(MAX_TURNS * 2) :]
         except Exception as exc:
             logger.error(
                 "Session history deserialization failed: exception_type=%s",
@@ -97,9 +96,7 @@ class RedisSessionStore(SessionStore):
             )
             return []
 
-    def save_turn(
-        self, principal_id: str, session_id: str, human: str, ai: str
-    ) -> None:
+    def save_turn(self, principal_id: str, session_id: str, human: str, ai: str) -> None:
         key = self._key(principal_id, session_id)
         script = """
         local raw = redis.call('GET', KEYS[1])
@@ -185,19 +182,19 @@ class InMemorySessionStore(SessionStore):
     def get_history(self, principal_id: str, session_id: str) -> List[Dict[str, str]]:
         key = self._key(principal_id, session_id)
         with self._guard:
-            return list(self._store.get(key, [])[- (MAX_TURNS * 2):])
+            return list(self._store.get(key, [])[-(MAX_TURNS * 2) :])
 
-    def save_turn(
-        self, principal_id: str, session_id: str, human: str, ai: str
-    ) -> None:
+    def save_turn(self, principal_id: str, session_id: str, human: str, ai: str) -> None:
         key = self._key(principal_id, session_id)
         with self._guard:
             history = self._store.setdefault(key, [])
-            history.extend([
-                {"role": "human", "content": human},
-                {"role": "ai", "content": ai},
-            ])
-            self._store[key] = history[- (MAX_TURNS * 2):]
+            history.extend(
+                [
+                    {"role": "human", "content": human},
+                    {"role": "ai", "content": ai},
+                ]
+            )
+            self._store[key] = history[-(MAX_TURNS * 2) :]
             self._sessions.setdefault(principal_id, set()).add(session_id)
 
     def clear_session(self, principal_id: str, session_id: str) -> None:

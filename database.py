@@ -2,22 +2,74 @@
 # Manages tool_calls audit log, pending_actions confirmation gate store,
 # and eval_runs history.
 
+import json
+import logging
 import os
 import re
-import json
 import sqlite3
-import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone, timedelta
+
 from security import redact_sensitive
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("SQLITE_DB_PATH", os.path.join(os.path.dirname(__file__), "sheetsense.db"))
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+
+class _PostgresCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.lastrowid = None
+
+    @staticmethod
+    def _sql(query: str) -> str:
+        return query.replace("?", "%s").replace("BEGIN IMMEDIATE", "BEGIN")
+
+    def execute(self, query: str, params=()):
+        self._cursor.execute(self._sql(query), params)
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+
+class _PostgresConnection:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def cursor(self):
+        return _PostgresCursor(self._connection.cursor())
+
+    def execute(self, query: str, params=()):
+        return self.cursor().execute(query, params)
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
 
 
 def get_db_connection() -> sqlite3.Connection:
     """Return a connection to the SQLite database with Row factory."""
+    if DATABASE_URL:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        url = DATABASE_URL.replace("postgresql+psycopg://", "postgresql://", 1)
+        return _PostgresConnection(psycopg.connect(url, row_factory=dict_row))
     conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.row_factory = sqlite3.Row
     return conn
@@ -25,6 +77,17 @@ def get_db_connection() -> sqlite3.Connection:
 
 def init_db(db_path: Optional[str] = None):
     """Create all required tables if they do not exist."""
+    if DATABASE_URL and db_path is None:
+        conn = get_db_connection()
+        try:
+            row = conn.execute(
+                "SELECT to_regclass('public.pending_actions') AS table_name"
+            ).fetchone()
+            if not row or not row["table_name"]:
+                raise RuntimeError("PostgreSQL schema is not migrated. Run 'alembic upgrade head'.")
+        finally:
+            conn.close()
+        return
     path = db_path or DB_PATH
     conn = sqlite3.connect(path, timeout=20.0)
     cursor = conn.cursor()
@@ -39,7 +102,9 @@ def init_db(db_path: Optional[str] = None):
         output_json TEXT,
         success BOOLEAN NOT NULL DEFAULT 1,
         latency_ms INTEGER DEFAULT 0,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        request_id TEXT,
+        trace_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS pending_actions (
@@ -78,7 +143,36 @@ def init_db(db_path: Optional[str] = None):
         tool_selection_accuracy REAL NOT NULL,
         answer_correctness_rate REAL NOT NULL,
         guardrail_compliance_rate REAL NOT NULL,
-        run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        mode TEXT NOT NULL DEFAULT 'offline_deterministic',
+        model_name TEXT,
+        model_version TEXT,
+        dataset_version TEXT,
+        metrics_json TEXT,
+        baseline_delta_json TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS eval_results (
+        run_id TEXT NOT NULL,
+        case_id TEXT NOT NULL,
+        category TEXT NOT NULL,
+        passed BOOLEAN NOT NULL,
+        latency_ms REAL NOT NULL,
+        result_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, case_id),
+        FOREIGN KEY (run_id) REFERENCES eval_runs(eval_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        principal_id TEXT,
+        request_id TEXT,
+        trace_id TEXT,
+        resource_id TEXT,
+        outcome TEXT NOT NULL,
+        detail_json TEXT NOT NULL,
+        created_at TIMESTAMP NOT NULL
     );
     """)
 
@@ -97,9 +191,23 @@ def init_db(db_path: Optional[str] = None):
     }
     for column, definition in migrations.items():
         if column not in existing_columns:
-            cursor.execute(
-                f"ALTER TABLE pending_actions ADD COLUMN {column} {definition}"
-            )
+            cursor.execute(f"ALTER TABLE pending_actions ADD COLUMN {column} {definition}")
+    tool_columns = {row[1] for row in cursor.execute("PRAGMA table_info(tool_calls)").fetchall()}
+    for column in ("request_id", "trace_id"):
+        if column not in tool_columns:
+            cursor.execute(f"ALTER TABLE tool_calls ADD COLUMN {column} TEXT")
+    eval_columns = {row[1] for row in cursor.execute("PRAGMA table_info(eval_runs)").fetchall()}
+    eval_migrations = {
+        "mode": "TEXT NOT NULL DEFAULT 'offline_deterministic'",
+        "model_name": "TEXT",
+        "model_version": "TEXT",
+        "dataset_version": "TEXT",
+        "metrics_json": "TEXT",
+        "baseline_delta_json": "TEXT",
+    }
+    for column, definition in eval_migrations.items():
+        if column not in eval_columns:
+            cursor.execute(f"ALTER TABLE eval_runs ADD COLUMN {column} {definition}")
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_pending_owner "
         "ON pending_actions(principal_id, status, expires_at)"
@@ -121,12 +229,14 @@ def init_db(db_path: Optional[str] = None):
 
 # Credential Scrubbing (Architecture §7)
 SENSITIVE_PATTERNS = [
-    re.compile(r"AIzaSy[A-Za-z0-9_\-]{33}"),                            # Google API key
-    re.compile(r"sk-[a-zA-Z0-9\-_]{20,}"),                             # OpenAI API key
-    re.compile(r"-----BEGIN PRIVATE KEY-----[^-]+-----END PRIVATE KEY-----", re.DOTALL), # RSA/Private key
-    re.compile(r'"private_key":\s*"[^"]+"'),                           # Service account private key
-    re.compile(r'"client_email":\s*"[^"]+"'),                          # Service account email
-    re.compile(r'xox[baprs]-[0-9a-zA-Z\-]+'),                          # Slack tokens
+    re.compile(r"AIzaSy[A-Za-z0-9_\-]{33}"),  # Google API key
+    re.compile(r"sk-[a-zA-Z0-9\-_]{20,}"),  # OpenAI API key
+    re.compile(
+        r"-----BEGIN PRIVATE KEY-----[^-]+-----END PRIVATE KEY-----", re.DOTALL
+    ),  # RSA/Private key
+    re.compile(r'"private_key":\s*"[^"]+"'),  # Service account private key
+    re.compile(r'"client_email":\s*"[^"]+"'),  # Service account email
+    re.compile(r"xox[baprs]-[0-9a-zA-Z\-]+"),  # Slack tokens
 ]
 
 
@@ -143,6 +253,8 @@ def log_tool_call(
     success: bool = True,
     latency_ms: int = 0,
     session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> int:
     """Insert a scrubbed tool call audit record."""
     clean_input = scrub_credentials(input_data)
@@ -150,11 +262,21 @@ def log_tool_call(
 
     conn = get_db_connection()
     cursor = conn.cursor()
+    if request_id is None or trace_id is None:
+        from observability import request_id as current_request_id
+        from observability import trace_id as current_trace_id
+
+        request_id = request_id or current_request_id()
+        trace_id = trace_id or current_trace_id()
+    insert_sql = """
+        INSERT INTO tool_calls (
+            session_id, tool_name, input_json, output_json, success, latency_ms,
+            timestamp, request_id, trace_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """ + (" RETURNING call_id" if DATABASE_URL else "")
     cursor.execute(
-        """
-        INSERT INTO tool_calls (session_id, tool_name, input_json, output_json, success, latency_ms, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
+        insert_sql,
         (
             session_id,
             tool_name,
@@ -163,11 +285,16 @@ def log_tool_call(
             1 if success else 0,
             latency_ms,
             datetime.now(timezone.utc).isoformat(),
+            request_id,
+            trace_id,
         ),
     )
-    call_id = cursor.lastrowid
+    call_id = cursor.fetchone()["call_id"] if DATABASE_URL else cursor.lastrowid
     conn.commit()
     conn.close()
+    from observability import record_tool
+
+    record_tool(tool_name, success, latency_ms)
     return call_id
 
 
@@ -462,9 +589,7 @@ def upsert_spreadsheet_connection(
     return dict(row)
 
 
-def get_spreadsheet_connection(
-    connection_id: str, principal_id: str
-) -> Optional[Dict[str, Any]]:
+def get_spreadsheet_connection(connection_id: str, principal_id: str) -> Optional[Dict[str, Any]]:
     conn = get_db_connection()
     row = conn.execute(
         "SELECT * FROM spreadsheet_connections WHERE connection_id=? AND principal_id=?",
@@ -562,17 +687,26 @@ def log_eval_run(
     tool_selection_accuracy: float,
     answer_correctness_rate: float,
     guardrail_compliance_rate: float,
+    mode: str = "offline_deterministic",
+    model_name: Optional[str] = None,
+    model_version: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    metrics: Optional[Dict[str, Any]] = None,
+    baseline_delta: Optional[Dict[str, Any]] = None,
+    cases: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
-    """Insert a benchmark evaluation run record into SQLite."""
+    """Persist aggregate evaluation evidence and every individual case result."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT INTO eval_runs (
             eval_id, total_queries, tool_selection_accuracy,
-            answer_correctness_rate, guardrail_compliance_rate, run_at
+            answer_correctness_rate, guardrail_compliance_rate, run_at,
+            mode, model_name, model_version, dataset_version, metrics_json,
+            baseline_delta_json
         )
-        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             eval_id,
@@ -580,8 +714,31 @@ def log_eval_run(
             tool_selection_accuracy,
             answer_correctness_rate,
             guardrail_compliance_rate,
+            datetime.now(timezone.utc).isoformat(),
+            mode,
+            model_name,
+            model_version,
+            dataset_version,
+            json.dumps(metrics or {}, default=str),
+            json.dumps(baseline_delta or {}, default=str),
         ),
     )
+    for case in cases or []:
+        cursor.execute(
+            """
+            INSERT INTO eval_results (
+                run_id, case_id, category, passed, latency_ms, result_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                eval_id,
+                str(case.get("id", "")),
+                str(case.get("category", "unknown")),
+                1 if case.get("passed", case.get("ea_pass", False)) else 0,
+                float(case.get("latency_ms", 0)),
+                json.dumps(case, default=str),
+            ),
+        )
     conn.commit()
     conn.close()
 
@@ -590,9 +747,57 @@ def get_recent_eval_runs(limit: int = 10) -> List[Dict[str, Any]]:
     """Retrieve recent benchmark evaluation run records."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM eval_runs ORDER BY run_at DESC LIMIT ?", (limit,)
-    )
+    cursor.execute("SELECT * FROM eval_runs ORDER BY run_at DESC LIMIT ?", (limit,))
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def append_audit_event(
+    event_type: str,
+    outcome: str,
+    principal_id: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    detail: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Append a redacted business audit event; no update/delete API is exposed."""
+    from observability import request_id, trace_id
+
+    conn = get_db_connection()
+    audit_sql = """
+        INSERT INTO audit_events (
+            event_type, principal_id, request_id, trace_id, resource_id,
+            outcome, detail_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """ + (" RETURNING event_id" if DATABASE_URL else "")
+    cursor = conn.execute(
+        audit_sql,
+        (
+            event_type,
+            principal_id,
+            request_id(),
+            trace_id(),
+            resource_id,
+            outcome,
+            scrub_credentials(detail or {}),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+    event_id = int(cursor.fetchone()["event_id"]) if DATABASE_URL else int(cursor.lastrowid)
+    conn.close()
+    return event_id
+
+
+def get_audit_events(limit: int = 100) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    rows = conn.execute(
+        """
+        SELECT event_id, event_type, principal_id, request_id, trace_id,
+               resource_id, outcome, detail_json, created_at
+        FROM audit_events ORDER BY event_id DESC LIMIT ?
+        """,
+        (min(max(limit, 1), 500),),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

@@ -3,9 +3,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from eval_harness import EvaluationHarness, run_evaluation
-from main import app
 import database
+from eval_harness import run_evaluation
+from main import app
 
 
 @pytest.fixture
@@ -47,4 +47,3 @@ def test_eval_endpoint_and_sqlite_persistence(client):
     latest_run = runs[0]
     assert latest_run["total_queries"] == 30
     assert latest_run["tool_selection_accuracy"] == data["tsa"]
-

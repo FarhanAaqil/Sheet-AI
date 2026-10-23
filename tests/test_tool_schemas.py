@@ -4,20 +4,18 @@
 # legitimate numeric values (such as negative numbers).
 
 import json
-import pytest
 from unittest.mock import MagicMock
-import pandas as pd
+
+import pytest
 from pydantic import ValidationError
 
 from agent import (
-    ReadSheetInput,
-    FilterAndAggregateInput,
-    UpdateCellInput,
     DeleteRowInput,
-    SummarizeSheetInput,
+    FilterAndAggregateInput,
     FindAnomaliesInput,
-    CrossSheetJoinInput,
+    ReadSheetInput,
     SheetTools,
+    UpdateCellInput,
 )
 
 
@@ -182,32 +180,48 @@ def test_sandbox_escape_rejected_at_tool_execution_time():
     tools = SheetTools(mock_spreadsheet)
 
     # 1. Bypass attempt via __import__
-    res1 = tools.filter_and_aggregate(json.dumps({
-        "sheet_name": "Orders",
-        "pandas_code": "__import__('os').system('whoami')",
-    }))
+    res1 = tools.filter_and_aggregate(
+        json.dumps(
+            {
+                "sheet_name": "Orders",
+                "pandas_code": "__import__('os').system('whoami')",
+            }
+        )
+    )
     assert "Error during aggregation" in res1
     assert "Unsafe code detected" in res1
 
     # 2. Bypass attempt via lambda
-    res2 = tools.filter_and_aggregate(json.dumps({
-        "sheet_name": "Orders",
-        "pandas_code": "(lambda x: x)(df)",
-    }))
+    res2 = tools.filter_and_aggregate(
+        json.dumps(
+            {
+                "sheet_name": "Orders",
+                "pandas_code": "(lambda x: x)(df)",
+            }
+        )
+    )
     assert "Error during aggregation" in res2
     assert "Unsafe code detected" in res2
 
     # 3. Bypass attempt via df.apply
-    res3 = tools.filter_and_aggregate(json.dumps({
-        "sheet_name": "Orders",
-        "pandas_code": "df.apply(str)",
-    }))
+    res3 = tools.filter_and_aggregate(
+        json.dumps(
+            {
+                "sheet_name": "Orders",
+                "pandas_code": "df.apply(str)",
+            }
+        )
+    )
     assert "Error during aggregation" in res3
     assert "Unsafe code detected" in res3
 
     # 4. Valid aggregation executes cleanly
-    res4 = tools.filter_and_aggregate(json.dumps({
-        "sheet_name": "Orders",
-        "pandas_code": "df['Price'].sum()",
-    }))
+    res4 = tools.filter_and_aggregate(
+        json.dumps(
+            {
+                "sheet_name": "Orders",
+                "pandas_code": "df['Price'].sum()",
+            }
+        )
+    )
     assert res4 == "300"

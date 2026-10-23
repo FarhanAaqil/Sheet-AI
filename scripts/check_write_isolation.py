@@ -3,7 +3,6 @@
 # 1. No gspread write/delete method is called outside sheets_writer.py.
 # 2. sheets_writer is NEVER imported outside main.py / confirm handler.
 
-import os
 import re
 import sys
 from pathlib import Path
@@ -26,7 +25,9 @@ MUTATING_GSPREAD_METHODS = [
 ]
 
 # Pattern matching imports of sheets_writer
-SHEETS_WRITER_IMPORT = re.compile(r"^\s*(import\s+sheets_writer|from\s+sheets_writer\s+import)", re.MULTILINE)
+SHEETS_WRITER_IMPORT = re.compile(
+    r"^\s*(import\s+sheets_writer|from\s+sheets_writer\s+import)", re.MULTILINE
+)
 
 
 def check_write_isolation():
@@ -35,7 +36,7 @@ def check_write_isolation():
 
     for py_file in ROOT_DIR.rglob("*.py"):
         rel_path = py_file.relative_to(ROOT_DIR)
-        
+
         # Skip virtualenvs, tests, and scripts themselves
         str_path = str(rel_path).replace("\\", "/")
         if str_path.startswith((".venv/", "venv/", "ENV/", "tests/", "scripts/", "build/")):
@@ -88,4 +89,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -5,13 +5,14 @@
 # Backed by Redis with in-memory fallback. Returns 429 Too Many Requests with
 # a Retry-After header when limits are exceeded.
 
+import hashlib
+import logging
 import os
 import time
 import uuid
-import logging
-import hashlib
 from collections import defaultdict, deque
 from typing import Dict, Optional, Tuple
+
 from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
@@ -34,6 +35,7 @@ class RateLimiter:
         if os.getenv("ENV", "").lower() != "local_no_redis":
             try:
                 import redis
+
                 client = redis.from_url(
                     self.redis_url,
                     decode_responses=True,
@@ -50,11 +52,9 @@ class RateLimiter:
                         "Redis is required for distributed production rate limiting."
                     ) from e
                 logger.warning(
-                    "RateLimiter could not connect to Redis; using memory: "
-                    "exception_type=%s",
+                    "RateLimiter could not connect to Redis; using memory: exception_type=%s",
                     type(e).__name__,
                 )
-
 
     def check_rate_limit(
         self,
@@ -130,6 +130,7 @@ def rate_limit(max_requests: int, window_seconds: int = 60, endpoint_group: str 
     """
     FastAPI dependency factory enforcing sliding-window rate limits.
     """
+
     async def dependency(
         request: Request,
         api_key: Optional[str] = Security(api_key_header),

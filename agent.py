@@ -3,23 +3,26 @@
 # live Google Sheets data. Consumed by both FastAPI (main.py) and the
 # Streamlit UI (app.py).
 
-import os
-import re
 import ast
-import uuid
-import json
 import hashlib
+import json
 import logging
+import os
+import uuid
 from typing import Any, Dict, List, Optional, Union
 
-import pandas as pd
 import gspread
-from pydantic import BaseModel, Field, field_validator
-from google.oauth2.service_account import Credentials
+import pandas as pd
 from dotenv import load_dotenv
+from google.oauth2.service_account import Credentials
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+# --- LangGraph / LangChain Core (LangChain >=1.0 dropped AgentExecutor) ---
+from langgraph.prebuilt import create_react_agent
+from pydantic import BaseModel, Field, field_validator
 
 import database
-from session_store import SessionStore, get_session_store
 from cache_service import WorksheetCache
 from request_context import (
     RequestContext,
@@ -31,19 +34,14 @@ from request_context import (
     set_pending_action,
     set_request_context,
 )
-from spreadsheet_registry import SpreadsheetRegistry
 from retrieval import (
-    SchemaIndex,
     MultiQueryReformulator,
     RAGFusionRetriever,
+    SchemaIndex,
     format_retrieval_context,
 )
-
-# --- LangGraph / LangChain Core (LangChain >=1.0 dropped AgentExecutor) ---
-from langgraph.prebuilt import create_react_agent
-from langchain_core.tools import tool as lc_tool
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from session_store import SessionStore, get_session_store
+from spreadsheet_registry import SpreadsheetRegistry
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -87,14 +85,42 @@ def validate_no_formula_injection(value: Any, field_name: str) -> Any:
 
 # Strict AST-Based Safe Evaluation & Execution Engine (Zero eval())
 SAFE_PANDAS_METHODS = {
-    "sum", "mean", "median", "std", "var", "min", "max", "count",
-    "nunique", "value_counts", "describe", "head", "tail", "dropna",
-    "fillna", "isna", "notna", "round", "idxmax", "idxmin", "astype",
-    "contains", "lower", "upper", "strip",
+    "sum",
+    "mean",
+    "median",
+    "std",
+    "var",
+    "min",
+    "max",
+    "count",
+    "nunique",
+    "value_counts",
+    "describe",
+    "head",
+    "tail",
+    "dropna",
+    "fillna",
+    "isna",
+    "notna",
+    "round",
+    "idxmax",
+    "idxmin",
+    "astype",
+    "contains",
+    "lower",
+    "upper",
+    "strip",
 }
 
 SAFE_PANDAS_ATTRIBUTES = SAFE_PANDAS_METHODS | {
-    "loc", "iloc", "str", "shape", "columns", "dtypes", "index", "empty",
+    "loc",
+    "iloc",
+    "str",
+    "shape",
+    "columns",
+    "dtypes",
+    "index",
+    "empty",
 }
 
 
@@ -140,7 +166,9 @@ def validate_safe_pandas_ast(code: str) -> None:
                 ast.Await,
             ),
         ):
-            raise ValueError(f"Unsafe code detected: '{type(node).__name__}' construct is forbidden.")
+            raise ValueError(
+                f"Unsafe code detected: '{type(node).__name__}' construct is forbidden."
+            )
 
         # Reject unauthorized identifiers (only 'df' is permitted as variable name)
         if isinstance(node, ast.Name):
@@ -155,9 +183,13 @@ def validate_safe_pandas_ast(code: str) -> None:
         # Reject unauthorized function/method calls
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Attribute):
-                raise ValueError("Unsafe code detected: only whitelisted pandas methods are callable.")
+                raise ValueError(
+                    "Unsafe code detected: only whitelisted pandas methods are callable."
+                )
             if node.func.attr.startswith("_") or node.func.attr not in SAFE_PANDAS_METHODS:
-                raise ValueError(f"Unsafe code detected: unauthorized method call '{node.func.attr}'.")
+                raise ValueError(
+                    f"Unsafe code detected: unauthorized method call '{node.func.attr}'."
+                )
 
 
 def safe_eval_ast(node: ast.AST, df: pd.DataFrame) -> Any:
@@ -267,7 +299,9 @@ def execute_structured_aggregation(
     sub_df = df
     if filter_column and filter_operator is not None:
         if filter_column not in df.columns:
-            raise ValueError(f"Filter column '{filter_column}' not found in sheet columns: {list(df.columns)}")
+            raise ValueError(
+                f"Filter column '{filter_column}' not found in sheet columns: {list(df.columns)}"
+            )
         series = sub_df[filter_column]
         if filter_operator in ("==", "="):
             sub_df = sub_df[series == filter_value]
@@ -283,16 +317,16 @@ def execute_structured_aggregation(
             sub_df = sub_df[pd.to_numeric(series, errors="coerce") <= float(filter_value)]
         elif filter_operator.lower() == "contains":
             sub_df = sub_df[
-                series.astype(str).str.contains(
-                    str(filter_value), regex=False, na=False
-                )
+                series.astype(str).str.contains(str(filter_value), regex=False, na=False)
             ]
         else:
             raise ValueError(f"Unsupported filter operator: '{filter_operator}'.")
 
     if column:
         if column not in sub_df.columns:
-            raise ValueError(f"Aggregation column '{column}' not found in sheet columns: {list(sub_df.columns)}")
+            raise ValueError(
+                f"Aggregation column '{column}' not found in sheet columns: {list(sub_df.columns)}"
+            )
         target = sub_df[column]
     else:
         target = sub_df
@@ -344,28 +378,22 @@ class FilterAndAggregateInput(BaseModel):
     # Structured input fields (preferred approach)
     aggregation: Optional[str] = Field(
         default=None,
-        description="Aggregation operation: sum, mean, average, count, min, max, value_counts."
+        description="Aggregation operation: sum, mean, average, count, min, max, value_counts.",
     )
-    column: Optional[str] = Field(
-        default=None,
-        description="Target column header to aggregate."
-    )
+    column: Optional[str] = Field(default=None, description="Target column header to aggregate.")
     filter_column: Optional[str] = Field(
-        default=None,
-        description="Column header to filter rows on before aggregating."
+        default=None, description="Column header to filter rows on before aggregating."
     )
     filter_operator: Optional[str] = Field(
-        default=None,
-        description="Comparison operator for filter: ==, !=, >, >=, <, <=, contains."
+        default=None, description="Comparison operator for filter: ==, !=, >, >=, <, <=, contains."
     )
     filter_value: Optional[Union[str, int, float, bool]] = Field(
-        default=None,
-        description="Value to compare against for filtering."
+        default=None, description="Value to compare against for filtering."
     )
     # Safe expression input (strictly validated via AST, zero eval)
     pandas_code: Optional[str] = Field(
         default=None,
-        description="Safe pandas expression on variable 'df' (strictly AST validated, no arbitrary code execution)."
+        description="Safe pandas expression on variable 'df' (strictly AST validated, no arbitrary code execution).",
     )
 
     @field_validator("sheet_name")
@@ -448,6 +476,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
+
 def _build_gspread_client() -> gspread.Client:
     """Build and return an authenticated gspread client."""
     creds_json_str = os.getenv("GCP_CREDENTIALS_JSON")
@@ -459,8 +488,7 @@ def _build_gspread_client() -> gspread.Client:
         creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
     else:
         raise ValueError(
-            "Google credentials are not configured. Set GCP_CREDENTIALS_JSON "
-            "or GOOGLE_CREDS_PATH."
+            "Google credentials are not configured. Set GCP_CREDENTIALS_JSON or GOOGLE_CREDS_PATH."
         )
     return gspread.authorize(creds)
 
@@ -476,9 +504,7 @@ class SheetTools:
     def __init__(self, spreadsheet: gspread.Spreadsheet):
         self.spreadsheet = spreadsheet
         clear_pending_action()
-        self.cache = WorksheetCache(
-            ttl_seconds=int(os.getenv("SHEET_CACHE_TTL_SECONDS", "30"))
-        )
+        self.cache = WorksheetCache(ttl_seconds=int(os.getenv("SHEET_CACHE_TTL_SECONDS", "30")))
         self._load_all_sheets()
 
     # ---- Internal helpers ------------------------------------------------
@@ -538,9 +564,7 @@ class SheetTools:
     def cache_metadata(self, sheet_name: str) -> Dict[str, Any]:
         return self.cache.metadata(sheet_name)
 
-    def _expected_row_state(
-        self, sheet_name: str, id_column: str, id_value: Any
-    ) -> Dict[str, Any]:
+    def _expected_row_state(self, sheet_name: str, id_column: str, id_value: Any) -> Dict[str, Any]:
         df = self._get_df(sheet_name, refresh=True)
         if df is None or id_column not in df.columns:
             raise ValueError("The target sheet or identifier column was not found.")
@@ -549,9 +573,7 @@ class SheetTools:
             raise ValueError("The target identifier must match exactly one row.")
         row = matches.iloc[0]
         normalized = {str(column): str(row[column]) for column in df.columns}
-        payload = json.dumps(
-            normalized, sort_keys=True, separators=(",", ":"), default=str
-        )
+        payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str)
         return {
             "row_fingerprint": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
             "captured_at": self.cache.metadata(sheet_name)["last_refreshed_at"],
@@ -652,11 +674,6 @@ class SheetTools:
                 "next_offset": next_offset,
             }
             return json.dumps(metadata) + "\n\n" + page.to_markdown(index=False)
-            # Return up to 50 rows as markdown to avoid context overflow
-            return (
-                f"Sheet '{sheet_name}' — {len(df)} rows × {len(df.columns)} columns\n\n"
-                + df.head(50).to_markdown(index=False)
-            )
         except Exception:
             return "Error reading sheet: the requested operation could not be completed."
 
@@ -747,9 +764,7 @@ class SheetTools:
             context = get_request_context() or RequestContext(
                 "legacy-admin", "legacy-session", "default", "direct-tool"
             )
-            expected_state = self._expected_row_state(
-                sheet_name, id_column, id_value
-            )
+            expected_state = self._expected_row_state(sheet_name, id_column, id_value)
 
             pending_action = database.create_pending_action(
                 action_id=action_id,
@@ -770,8 +785,12 @@ class SheetTools:
                 f"This change has NOT been executed yet and will expire in 5 minutes. "
                 f"Call POST /actions/{action_id}/confirm to proceed."
             )
-        except Exception as e:
-            return f"❌ Failed to stage update action: {e}"
+        except Exception as exc:
+            logger.warning(
+                "Failed to stage update action: exception_type=%s",
+                type(exc).__name__,
+            )
+            return "Failed to stage update action. Review the target and try again."
 
     def delete_row(self, input_str: Any = "", **kwargs) -> str:
         """
@@ -800,9 +819,7 @@ class SheetTools:
             context = get_request_context() or RequestContext(
                 "legacy-admin", "legacy-session", "default", "direct-tool"
             )
-            expected_state = self._expected_row_state(
-                sheet_name, id_column, id_value
-            )
+            expected_state = self._expected_row_state(sheet_name, id_column, id_value)
 
             pending_action = database.create_pending_action(
                 action_id=action_id,
@@ -823,8 +840,12 @@ class SheetTools:
                 f"This deletion has NOT been executed yet and will expire in 5 minutes. "
                 f"Call POST /actions/{action_id}/confirm to proceed."
             )
-        except Exception as e:
-            return f"❌ Failed to stage delete action: {e}"
+        except Exception as exc:
+            logger.warning(
+                "Failed to stage delete action: exception_type=%s",
+                type(exc).__name__,
+            )
+            return "Failed to stage delete action. Review the target and try again."
 
     def summarize_sheet(self, input_str: Any = "", **kwargs) -> str:
         """
@@ -882,11 +903,13 @@ class SheetTools:
             valid = numeric.dropna()
             excluded_count = int(numeric.isna().sum())
             if valid.empty:
-                return json.dumps({
-                    "outlier_count": 0,
-                    "excluded_value_count": excluded_count,
-                    "reason": "no_numeric_values",
-                })
+                return json.dumps(
+                    {
+                        "outlier_count": 0,
+                        "excluded_value_count": excluded_count,
+                        "reason": "no_numeric_values",
+                    }
+                )
             q1, q3 = valid.quantile(0.25), valid.quantile(0.75)
             iqr = q3 - q1
             lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
@@ -941,9 +964,7 @@ class SheetTools:
             estimated_rows = int(
                 sum(int(left_counts[key]) * int(right_counts[key]) for key in common)
             )
-            max_output_rows = min(
-                5000, max(1, int(params.get("max_output_rows", 1000)))
-            )
+            max_output_rows = min(5000, max(1, int(params.get("max_output_rows", 1000))))
             if estimated_rows > max_output_rows:
                 return (
                     "Cross-sheet join rejected: estimated output "
@@ -957,11 +978,7 @@ class SheetTools:
                 "right_duplicate_keys": int((right_counts > 1).sum()),
                 "truncated": len(merged) > 100,
             }
-            return (
-                json.dumps(metadata)
-                + "\n"
-                + merged.head(100).to_markdown(index=False)
-            )
+            return json.dumps(metadata) + "\n" + merged.head(100).to_markdown(index=False)
         except Exception:
             return "Cross-sheet join error: the operation could not be completed."
 
@@ -1001,9 +1018,7 @@ class SheetSenseAgent:
         )
         self.session_store: SessionStore = session_store or get_session_store()
 
-    def _request_services(
-        self, principal_id: str, connection_id: Optional[str] = None
-    ):
+    def _request_services(self, principal_id: str, connection_id: Optional[str] = None):
         connection, spreadsheet = self.registry.resolve(principal_id, connection_id)
         sheet_tools = SheetTools(spreadsheet)
         schema_index = SchemaIndex()
@@ -1086,9 +1101,7 @@ class SheetSenseAgent:
                 messages.append(AIMessage(content=turn["content"]))
         return messages
 
-    def _save_turn(
-        self, principal_id: str, session_id: str, human: str, ai: str
-    ):
+    def _save_turn(self, principal_id: str, session_id: str, human: str, ai: str):
         """Append a completed turn to SessionStore (24h rolling TTL)."""
         self.session_store.save_turn(principal_id, session_id, human, ai)
 
@@ -1148,6 +1161,7 @@ class SheetSenseAgent:
             history = self._get_history(principal_id, session_id)
             messages = history + [HumanMessage(content=query)]
             from retry_handler import execute_with_retry
+
             result = execute_with_retry(
                 request_agent.invoke,
                 {"messages": messages},
@@ -1179,7 +1193,9 @@ class SheetSenseAgent:
                 if hasattr(m, "tool_calls") and m.tool_calls:
                     for tc in m.tool_calls:
                         tools_used.append(tc["name"])
-                        intermediate.append({"tool": tc["name"], "observation": str(tc.get("args", ""))[:500]})
+                        intermediate.append(
+                            {"tool": tc["name"], "observation": str(tc.get("args", ""))[:500]}
+                        )
 
             # Persist turn to session memory
             self._save_turn(principal_id, session_id, user_message, answer)
@@ -1204,10 +1220,7 @@ class SheetSenseAgent:
                 type(exc).__name__,
             )
             return {
-                "answer": (
-                    "I could not complete that request safely. "
-                    f"Reference: {error_id}."
-                ),
+                "answer": (f"I could not complete that request safely. Reference: {error_id}."),
                 "tools_used": [],
                 "intermediate_steps": [],
             }
@@ -1218,9 +1231,7 @@ class SheetSenseAgent:
 
     # ---- Utility methods (used by FastAPI endpoints) ----------------------
 
-    def resolve_spreadsheet(
-        self, principal_id: str, connection_id: Optional[str] = None
-    ):
+    def resolve_spreadsheet(self, principal_id: str, connection_id: Optional[str] = None):
         return self.registry.resolve(principal_id, connection_id)
 
     def get_sheet_tools(
@@ -1257,9 +1268,7 @@ class SheetSenseAgent:
         result.update(tools.cache_metadata(sheet_name))
         return result
 
-    def connect_spreadsheet(
-        self, principal_id: str, sheet_url: str
-    ) -> Dict[str, Any]:
+    def connect_spreadsheet(self, principal_id: str, sheet_url: str) -> Dict[str, Any]:
         """Register a tenant-owned connection without changing global state."""
         connection = self.registry.register(principal_id, sheet_url)
         names = self.get_sheet_names(principal_id, connection["connection_id"])
