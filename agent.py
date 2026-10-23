@@ -66,6 +66,10 @@ def validate_no_formula_injection(value: Any, field_name: str) -> Any:
     leading signs (+cmd, -malicious) while allowing legitimate numeric values (-100, +42.5).
     """
     if isinstance(value, str):
+        if value.startswith(("\t", "\r")):
+            raise ValueError(
+                f"Formula injection rejected in field '{field_name}': cannot start with formula prefix '{value[0]}'."
+            )
         stripped = value.strip()
         # Direct formula prefixes
         if any(stripped.startswith(prefix) for prefix in FORBIDDEN_FORMULA_PREFIXES):
