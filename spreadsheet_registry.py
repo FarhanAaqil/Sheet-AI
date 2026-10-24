@@ -13,7 +13,7 @@ PERMISSIONS = {"viewer", "editor"}
 
 
 def normalize_spreadsheet_id(sheet_url: str) -> str:
-    parsed = urlparse(sheet_url.strip())
+    parsed = urlparse(sheet_url.strip().strip("'\""))
     if parsed.scheme != "https" or parsed.netloc != "docs.google.com":
         raise ValueError("A valid HTTPS docs.google.com spreadsheet URL is required.")
     match = SHEET_URL_PATTERN.match(parsed.path)

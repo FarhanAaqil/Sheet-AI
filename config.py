@@ -46,16 +46,16 @@ class Settings:
         origins = os.getenv("ALLOWED_ORIGINS", defaults)
         return cls(
             app_env=env,
-            allowed_origins=[v.strip() for v in origins.split(",") if v.strip()],
+            allowed_origins=[v.strip().strip("'\"") for v in origins.split(",") if v.strip()],
             allow_insecure_no_auth=env_bool("ALLOW_INSECURE_NO_AUTH"),
-            api_key=os.getenv("SHEETSENSE_API_KEY", "").strip(),
-            api_key_hash=os.getenv("SHEETSENSE_API_KEY_HASH", "").strip().lower(),
-            api_keys_json=os.getenv("SHEETSENSE_API_KEYS_JSON", "").strip(),
-            gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
-            google_sheet_url=os.getenv("GOOGLE_SHEET_URL", "").strip(),
+            api_key=os.getenv("SHEETSENSE_API_KEY", "").strip().strip("'\""),
+            api_key_hash=os.getenv("SHEETSENSE_API_KEY_HASH", "").strip().strip("'\"").lower(),
+            api_keys_json=os.getenv("SHEETSENSE_API_KEYS_JSON", "").strip().strip("'\""),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip().strip("'\""),
+            google_sheet_url=os.getenv("GOOGLE_SHEET_URL", "").strip().strip("'\""),
             gcp_credentials_json=os.getenv("GCP_CREDENTIALS_JSON", "").strip(),
-            google_creds_path=os.getenv("GOOGLE_CREDS_PATH", "").strip(),
-            database_url=os.getenv("DATABASE_URL", "").strip(),
+            google_creds_path=os.getenv("GOOGLE_CREDS_PATH", "").strip().strip("'\""),
+            database_url=os.getenv("DATABASE_URL", "").strip().strip("'\""),
         )
 
     def validate_startup(self) -> None:

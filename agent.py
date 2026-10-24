@@ -483,7 +483,11 @@ SCOPES = [
 
 def _build_gspread_client() -> gspread.Client:
     """Build and return an authenticated gspread client."""
-    creds_json_str = os.getenv("GCP_CREDENTIALS_JSON")
+    creds_json_str = (os.getenv("GCP_CREDENTIALS_JSON") or "").strip()
+    if (creds_json_str.startswith("'") and creds_json_str.endswith("'")) or (
+        creds_json_str.startswith('"') and creds_json_str.endswith('"')
+    ):
+        creds_json_str = creds_json_str[1:-1].strip()
     creds_path = os.getenv("GOOGLE_CREDS_PATH")
     if creds_json_str:
         creds_info = json.loads(creds_json_str)
@@ -1011,13 +1015,15 @@ class SheetSenseAgent:
     """
 
     def __init__(self, session_store: Optional[SessionStore] = None):
-        sheet_url = os.getenv("GOOGLE_SHEET_URL", "")
+        sheet_url = os.getenv("GOOGLE_SHEET_URL", "").strip().strip("'\"")
         if not sheet_url:
             raise ValueError("GOOGLE_SHEET_URL environment variable not set.")
         self.registry = SpreadsheetRegistry(_build_gspread_client(), sheet_url)
+        gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip().strip("'\"")
+        model_name = (os.getenv("GEMINI_MODEL", "gemini-1.5-pro-latest")).strip().strip("'\"")
         self.llm = ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-1.5-pro-latest"),
-            google_api_key=os.getenv("GEMINI_API_KEY"),
+            model=model_name,
+            google_api_key=gemini_key,
             temperature=0.1,
         )
         self.session_store: SessionStore = session_store or get_session_store()
