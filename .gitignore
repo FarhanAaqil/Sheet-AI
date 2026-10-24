@@ -80,5 +80,3 @@ ehthumbs.db
 
 # Streamlit local secrets
 .streamlit/secrets.toml
-
-implementation_plan.md

@@ -115,7 +115,6 @@ files = [
 [tool.coverage.run]
 branch = true
 omit = [
-    "app.py",
     "tests/*",
     "scripts/*"
 ]

@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from starlette.staticfiles import StaticFiles
 
 import database
 from agent import SheetSenseAgent  # Our LangChain agent module
@@ -78,13 +77,7 @@ app.add_middleware(
 )
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestTracingMiddleware)
-app.mount(
-    "/static",
-    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
-    name="static",
-)
-
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from rate_limiter import rate_limit
@@ -183,14 +176,21 @@ class SessionResponse(BaseModel):
 # Endpoints
 
 
-@app.get("/", response_class=HTMLResponse, tags=["UI"])
+@app.get("/", tags=["UI"], include_in_schema=False)
 def root():
-    """Serves the Stitch-designed interactive desktop dashboard."""
-    static_file = os.path.join(os.path.dirname(__file__), "static", "index.html")
-    if os.path.exists(static_file):
-        with open(static_file, "r", encoding="utf-8") as f:
-            return f.read()
-    return '{"message": "SheetSense AI is running. POST to /chat to query your spreadsheet."}'
+    """Serve the canonical React client built by the frontend pipeline."""
+    index_file = os.path.join(os.path.dirname(__file__), "frontend", "dist", "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": {
+                "code": "FRONTEND_NOT_BUILT",
+                "message": "Build the frontend with 'npm run build --prefix frontend'.",
+            }
+        },
+    )
 
 
 @app.get("/health/live", tags=["Meta"], include_in_schema=False)
@@ -726,3 +726,10 @@ def trigger_eval_run(
                 "error_id": error_id,
             },
         ) from None
+
+
+_frontend_assets = os.path.join(os.path.dirname(__file__), "frontend", "dist", "assets")
+if os.path.isdir(_frontend_assets):
+    from starlette.staticfiles import StaticFiles
+
+    app.mount("/assets", StaticFiles(directory=_frontend_assets), name="frontend-assets")

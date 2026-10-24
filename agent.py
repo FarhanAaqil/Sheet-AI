@@ -1,7 +1,7 @@
 # SheetSense AI — LangChain Agent Module
 # Core agent with tool-calling and multi-step ReAct reasoning over
 # live Google Sheets data. Consumed by both FastAPI (main.py) and the
-# Streamlit UI (app.py).
+# FastAPI and React workspace.
 
 import ast
 import hashlib

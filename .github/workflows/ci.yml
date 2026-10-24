@@ -57,10 +57,15 @@ jobs:
       - name: Evaluation regression comparison
         run: python scripts/check_eval_regression.py
 
+      - name: Build canonical frontend
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+
       - name: Browser and accessibility tests
         run: |
-          npm install
-          npx playwright install --with-deps chromium
+          npm ci
+          npx playwright install --with-deps chromium firefox webkit
           npm run test:browser
 
       - name: Build production container

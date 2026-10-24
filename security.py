@@ -166,11 +166,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     CSP = "; ".join(
         [
             """default-src 'self' """,
-            """script-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net 'unsafe-eval' 'sha256-YoMSsnwv4n0ghqbN3klQxu71BhEu5k5kV2d0QoPCMxs=' 'sha256-GB2394cGq2L0VyowYQWe9w6OGIv/k4dX4qlJ/OrOJeQ=' """,
-            """style-src 'self' 'unsafe-inline' https://fonts.googleapis.com""",
-            """font-src 'self' https://fonts.gstatic.com data:""",
+            """script-src 'self' """,
+            """style-src 'self' """,
+            """font-src 'self' """,
             """img-src 'self' data:""",
-            """connect-src 'self' http://localhost:* http://127.0.0.1:* https:""",
+            """connect-src 'self' """,
             """object-src 'none' """,
             """base-uri 'self' """,
             """form-action 'self' """,

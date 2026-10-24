@@ -1,4 +1,12 @@
-# ---------- Stage 1: Build ----------
+# ---------- Stage 1: Frontend build ----------
+FROM node:22-alpine AS frontend-builder
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend ./
+RUN npm run build
+
+# ---------- Stage 2: Python dependencies ----------
 FROM python:3.12-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -11,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# ---------- Stage 2: Runtime ----------
+# ---------- Stage 3: Runtime ----------
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -22,12 +30,12 @@ WORKDIR /app
 
 COPY --from=builder /install /usr/local
 
-# Copy application source and web assets
+# Copy application source and the canonical web client
 COPY *.py ./
-COPY static ./static
 COPY docs ./docs
 COPY alembic.ini ./
 COPY migrations ./migrations
+COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
 RUN addgroup --system sheetsense \
     && adduser --system --ingroup sheetsense sheetsense \
@@ -43,5 +51,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
 
-# Default: run FastAPI; the browser client is served from /static/index.html.
+# Default: run FastAPI; the React client is served from /.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

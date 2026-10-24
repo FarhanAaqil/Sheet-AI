@@ -1,6 +1,3 @@
-import base64
-import hashlib
-import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -65,19 +62,23 @@ def test_extended_redaction_masks_connection_strings_and_passwords():
 
 
 def test_browser_ui_has_no_placeholder_secret_or_fake_offline_execution():
-    source = Path("static/index.html").read_text(encoding="utf-8")
-    assert 'value="replace-with-a-random-secret"' not in source
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path("frontend/src").rglob("*")
+        if path.suffix in {".ts", ".tsx"}
+    )
+    assert "replace-with-a-random-secret" not in source
     assert 'session_id: "sess-user-42"' not in source
     assert "fallbackLocalQuery" not in source
     assert "has been staged in SQLite" not in source
-    assert "htmlContent}" not in source
-    assert 'onclick="sortTable' not in source
+    assert "dangerouslySetInnerHTML" not in source
+    assert "localStorage" not in source
+    assert "sessionStorage" not in source
 
 
-def test_csp_hashes_match_every_inline_script():
-    source = Path("static/index.html").read_text(encoding="utf-8")
-    scripts = re.findall(r"<script>(.*?)</script>", source, re.DOTALL)
-    assert scripts
-    for script in scripts:
-        digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
-        assert f"'sha256-{digest}'" in SecurityHeadersMiddleware.CSP
+def test_canonical_frontend_uses_external_bundle_with_strict_csp():
+    source = Path("frontend/index.html").read_text(encoding="utf-8")
+    assert 'type="module" src="/src/main.tsx"' in source
+    assert "'unsafe-inline'" not in SecurityHeadersMiddleware.CSP
+    assert "'unsafe-eval'" not in SecurityHeadersMiddleware.CSP
+    assert "cdn." not in SecurityHeadersMiddleware.CSP
