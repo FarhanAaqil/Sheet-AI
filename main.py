@@ -193,6 +193,15 @@ def root():
     )
 
 
+@app.get("/favicon.svg", tags=["UI"], include_in_schema=False)
+def favicon():
+    """Serve the icon emitted by the frontend build."""
+    icon_file = os.path.join(os.path.dirname(__file__), "frontend", "dist", "favicon.svg")
+    if os.path.exists(icon_file):
+        return FileResponse(icon_file, media_type="image/svg+xml")
+    raise HTTPException(status_code=404, detail="Favicon not found.")
+
+
 @app.get("/health/live", tags=["Meta"], include_in_schema=False)
 def liveness():
     return {"status": "ok"}

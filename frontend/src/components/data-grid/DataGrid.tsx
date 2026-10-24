@@ -9,7 +9,7 @@ import {
   Search,
   SlidersHorizontal
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SheetData } from "../../api/types";
 
 type Props = {
@@ -34,6 +34,10 @@ export function DataGrid({ result, loading, error, page, pageSize, onPageChange,
   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>();
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [columnsOpen, setColumnsOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterColumn, setFilterColumn] = useState("");
+  const [filterValue, setFilterValue] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const columns = (result?.columns ?? []).filter((column) => !hidden.has(column));
   const rows = useMemo(() => {
@@ -42,6 +46,12 @@ export function DataGrid({ result, loading, error, page, pageSize, onPageChange,
     if (normalized) {
       next = next.filter((row) =>
         Object.values(row).some((value) => String(value ?? "").toLocaleLowerCase().includes(normalized))
+      );
+    }
+    if (filterColumn && filterValue.trim()) {
+      const expected = filterValue.trim().toLocaleLowerCase();
+      next = next.filter((row) =>
+        String(row[filterColumn] ?? "").toLocaleLowerCase().includes(expected)
       );
     }
     if (sort) {
@@ -56,7 +66,26 @@ export function DataGrid({ result, loading, error, page, pageSize, onPageChange,
       });
     }
     return next;
-  }, [query, result?.data, sort]);
+  }, [filterColumn, filterValue, query, result?.data, sort]);
+
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        event.key === "/" &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        target?.tagName !== "INPUT" &&
+        target?.tagName !== "TEXTAREA" &&
+        target?.tagName !== "SELECT"
+      ) {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, []);
 
   const toggleSort = (column: string) => {
     setSort((current) =>
@@ -88,6 +117,7 @@ export function DataGrid({ result, loading, error, page, pageSize, onPageChange,
           <div className="search-control">
             <Search size={16} aria-hidden="true" />
             <input
+              ref={searchRef}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search visible rows"
@@ -95,7 +125,14 @@ export function DataGrid({ result, loading, error, page, pageSize, onPageChange,
             />
             <kbd>/</kbd>
           </div>
-          <button className="secondary-button"><Filter size={16} /> Filter</button>
+          <button
+            className="secondary-button"
+            onClick={() => setFilterOpen((value) => !value)}
+            aria-expanded={filterOpen}
+            aria-controls="row-filter-panel"
+          >
+            <Filter size={16} /> Filter
+          </button>
           <div className="popover-wrap">
             <button className="secondary-button" onClick={() => setColumnsOpen(!columnsOpen)} aria-expanded={columnsOpen}>
               <Columns3 size={16} /> Columns
@@ -127,6 +164,34 @@ export function DataGrid({ result, loading, error, page, pageSize, onPageChange,
           </button>
         </div>
       </div>
+
+      {filterOpen && (
+        <div className="filter-panel" id="row-filter-panel">
+          <label>
+            Column
+            <select value={filterColumn} onChange={(event) => setFilterColumn(event.target.value)}>
+              <option value="">Choose a column</option>
+              {(result?.columns ?? []).map((column) => <option key={column} value={column}>{column}</option>)}
+            </select>
+          </label>
+          <label>
+            Contains
+            <input
+              value={filterValue}
+              onChange={(event) => setFilterValue(event.target.value)}
+              placeholder="Filter value"
+              disabled={!filterColumn}
+            />
+          </label>
+          <button
+            className="text-button"
+            onClick={() => { setFilterColumn(""); setFilterValue(""); }}
+            disabled={!filterColumn && !filterValue}
+          >
+            Clear filter
+          </button>
+        </div>
+      )}
 
       <div className="freshness-row">
         <span className="live-indicator"><span /> Live source</span>

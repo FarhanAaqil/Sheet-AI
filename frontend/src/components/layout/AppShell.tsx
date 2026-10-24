@@ -24,6 +24,7 @@ type Props = {
   assistantOpen: boolean;
   onSidebarToggle: () => void;
   onAssistantToggle: () => void;
+  onWorkspaceClick: () => void;
   connected: boolean;
 };
 
@@ -45,6 +46,7 @@ export function AppShell({
   assistantOpen,
   onSidebarToggle,
   onAssistantToggle,
+  onWorkspaceClick,
   connected
 }: Props) {
   return (
@@ -62,7 +64,7 @@ export function AppShell({
         </div>
 
         <div className="workspace-context" aria-label="Current workspace">
-          <button className="context-button" type="button">
+          <button className="context-button" type="button" onClick={onWorkspaceClick} aria-label="Open workspace settings">
             <span>
               <small>Workspace</small>
               <strong>{connectionName}</strong>

@@ -149,13 +149,23 @@ export function App() {
     }
   });
 
-  const enterWorkspace = (key: string) => {
-    setApiKey(key.trim() || "dev-key-123");
-    setEntered(true);
+  const enterWorkspace = async (key: string) => {
+    const effectiveKey = key.trim();
+    setOnboardingBusy(true);
+    setOnboardingError("");
+    try {
+      await createApiClient({ apiKey: effectiveKey }).connections();
+      setApiKey(effectiveKey);
+      setEntered(true);
+    } catch (error) {
+      setOnboardingError(messageFor(error));
+    } finally {
+      setOnboardingBusy(false);
+    }
   };
 
   const connectFromOnboarding = async (key: string, url: string) => {
-    const effectiveKey = key.trim() || "dev-key-123";
+    const effectiveKey = key.trim();
     setOnboardingBusy(true);
     setOnboardingError("");
     try {
@@ -247,8 +257,18 @@ export function App() {
         assistantOpen={assistantOpen}
         onSidebarToggle={() => setSidebarOpen((value) => !value)}
         onAssistantToggle={() => setAssistantOpen((value) => !value)}
+        onWorkspaceClick={() => setView("settings")}
         connected={Boolean(currentSheet)}
       >
+        {(connections.error || sheets.error) && (
+          <div className="workspace-error" role="alert">
+            <AlertCircle size={18} />
+            <span>{messageFor(connections.error || sheets.error)}</span>
+            <button className="secondary-button" onClick={() => { setEntered(false); setOnboardingError(""); }}>
+              Update access key
+            </button>
+          </div>
+        )}
         {view === "data" && (
           <DataGrid
             result={sheetData.data}
@@ -345,11 +365,13 @@ type SettingsProps = {
 };
 
 function SettingsView(props: SettingsProps) {
+  const [apiKeyDraft, setApiKeyDraft] = useState(props.apiKey);
+
   return (
     <section className="standard-page">
       <div className="page-heading"><div><p className="section-kicker">Workspace administration</p><h1>Settings</h1></div><SettingsIcon size={24} /></div>
       <div className="settings-grid">
-        <section className="settings-card"><header><KeyRound size={19} /><div><h2>Access key</h2><p>Held in memory for this browser tab only.</p></div></header><label>API key<input type="password" value={props.apiKey} onChange={(e) => props.setApiKey(e.target.value)} autoComplete="off" /></label></section>
+        <section className="settings-card"><header><KeyRound size={19} /><div><h2>Access key</h2><p>Held in memory for this browser tab only.</p></div></header><label>API key<div className="inline-form"><input type="password" value={apiKeyDraft} onChange={(e) => setApiKeyDraft(e.target.value)} autoComplete="off" /><button className="secondary-button" type="button" onClick={() => props.setApiKey(apiKeyDraft.trim())} disabled={apiKeyDraft.trim() === props.apiKey}>Apply</button></div></label></section>
         <section className="settings-card"><header><Database size={19} /><div><h2>Active connection</h2><p>Select a tenant-owned spreadsheet connection.</p></div></header><label>Connection<select value={props.connectionId} onChange={(e) => props.setConnectionId(e.target.value)}>{props.connections.map(item => <option key={item.connection_id} value={item.connection_id}>{item.display_name || item.connection_id}</option>)}</select></label></section>
         <section className="settings-card span-two"><header><Link2 size={19} /><div><h2>Connect another Google Sheet</h2><p>Requires an administrator role and access through the configured service account.</p></div></header><div className="inline-form"><input value={props.connectUrl} onChange={(e) => props.setConnectUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…" /><button className="primary-button" onClick={props.connect} disabled={props.busy || !props.connectUrl}>{props.busy ? "Connecting…" : "Test and connect"}</button></div>{props.error && <div className="inline-alert error">{props.error}</div>}</section>
         <section className="settings-card"><header><ShieldCheck size={19} /><div><h2>Roles and approvals</h2><p>Viewer, editor, approver, and administrator permissions are enforced by the API.</p></div></header><span className="settings-status">Managed by API key policy</span></section>

@@ -54,10 +54,6 @@ def load_key_records(settings: Settings) -> list[APIKeyRecord]:
         records.append(APIKeyRecord("default-admin", settings.api_key_hash, ALL_ROLES))
     if settings.api_key:
         records.append(APIKeyRecord("legacy-admin", hash_api_key(settings.api_key), ALL_ROLES))
-    if not settings.is_production and settings.gemini_api_key:
-        records.append(
-            APIKeyRecord("gemini-dev-admin", hash_api_key(settings.gemini_api_key), ALL_ROLES)
-        )
     return records
 
 

@@ -27,7 +27,9 @@ async function mockWorkspace(page, options = {}) {
     }
   }));
   await page.goto("/");
-  await page.getByRole("button", { name: "Continue to an unconfigured workspace" }).click();
+  await page.getByRole("button", { name: "Connect a workspace" }).click();
+  await page.getByLabel("API key").fill("dev-key-123");
+  await page.getByRole("button", { name: "Open existing workspace" }).click();
   await expect(page.getByRole("heading", { name: "Live data" })).toBeVisible();
 }
 

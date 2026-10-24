@@ -11,7 +11,7 @@ type Props = {
   busy: boolean;
   error?: string;
   onConnect: (apiKey: string, sheetUrl: string) => Promise<void>;
-  onContinue: (apiKey: string) => void;
+  onContinue: (apiKey: string) => Promise<void>;
 };
 
 export function Onboarding({ busy, error, onConnect, onContinue }: Props) {
@@ -29,6 +29,11 @@ export function Onboarding({ busy, error, onConnect, onContinue }: Props) {
     }
     setValidation("");
     await onConnect(apiKey, sheetUrl);
+  };
+
+  const openExisting = async () => {
+    setValidation("");
+    await onContinue(apiKey);
   };
 
   return (
@@ -54,9 +59,6 @@ export function Onboarding({ busy, error, onConnect, onContinue }: Props) {
             <button className="primary-button wide" onClick={() => setStep(1)}>
               Connect a workspace <ArrowRight size={17} />
             </button>
-            <button className="text-button" onClick={() => onContinue("")}>
-              Continue to an unconfigured workspace
-            </button>
           </>
         ) : (
           <form onSubmit={submit} className="connect-form">
@@ -68,9 +70,9 @@ export function Onboarding({ busy, error, onConnect, onContinue }: Props) {
                 onChange={(event) => setApiKey(event.target.value)}
                 type="password"
                 autoComplete="off"
-                placeholder="Your SheetSense access key (default: dev-key-123)"
+                placeholder="Your SheetSense access key"
               />
-              <small>Kept only in this browser tab. Use <code>dev-key-123</code> or leave blank.</small>
+              <small>Kept only in this browser tab and sent only to this SheetSense server.</small>
             </label>
             <label>
               <span><Link2 size={15} /> Google Sheet URL</span>
@@ -89,6 +91,9 @@ export function Onboarding({ busy, error, onConnect, onContinue }: Props) {
             </div>
             <button className="primary-button wide" disabled={busy}>
               {busy ? "Testing connection…" : "Test and connect"} <ArrowRight size={17} />
+            </button>
+            <button className="secondary-button wide" type="button" onClick={openExisting} disabled={busy}>
+              {busy ? "Checking access..." : "Open existing workspace"}
             </button>
             <button className="text-button" type="button" onClick={() => setStep(0)}>Back</button>
           </form>
