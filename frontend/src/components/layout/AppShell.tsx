@@ -82,7 +82,12 @@ export function AppShell({
           <button className="icon-button" onClick={() => onViewChange("settings")} aria-label="Open settings">
             <Settings size={19} />
           </button>
-          <button className="assistant-toggle" onClick={onAssistantToggle} aria-expanded={assistantOpen}>
+          <button
+            className="assistant-toggle"
+            onClick={onAssistantToggle}
+            aria-expanded={assistantOpen}
+            aria-label="Assistant"
+          >
             <Bot size={18} />
             <span>Assistant</span>
             <PanelRight size={16} />
