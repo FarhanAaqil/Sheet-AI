@@ -150,17 +150,18 @@ export function App() {
   });
 
   const enterWorkspace = (key: string) => {
-    setApiKey(key);
+    setApiKey(key.trim() || "dev-key-123");
     setEntered(true);
   };
 
   const connectFromOnboarding = async (key: string, url: string) => {
+    const effectiveKey = key.trim() || "dev-key-123";
     setOnboardingBusy(true);
     setOnboardingError("");
     try {
-      const onboardingApi = createApiClient({ apiKey: key });
+      const onboardingApi = createApiClient({ apiKey: effectiveKey });
       const result = await onboardingApi.connect(url);
-      setApiKey(key);
+      setApiKey(effectiveKey);
       setConnectionId(result.connection_id);
       setEntered(true);
     } catch (error) {

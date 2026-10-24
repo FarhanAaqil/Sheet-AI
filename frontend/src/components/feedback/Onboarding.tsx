@@ -68,9 +68,9 @@ export function Onboarding({ busy, error, onConnect, onContinue }: Props) {
                 onChange={(event) => setApiKey(event.target.value)}
                 type="password"
                 autoComplete="off"
-                placeholder="Your SheetSense access key"
+                placeholder="Your SheetSense access key (default: dev-key-123)"
               />
-              <small>Kept only in this browser tab and never written to local storage.</small>
+              <small>Kept only in this browser tab. Use <code>dev-key-123</code> or leave blank.</small>
             </label>
             <label>
               <span><Link2 size={15} /> Google Sheet URL</span>

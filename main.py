@@ -336,7 +336,13 @@ def connect_sheet(
     """Dynamically connects the agent to an external Google Sheet URL."""
     try:
         result = agent.connect_spreadsheet(principal.principal_id, request.sheet_url)
-        return {"status": "connected", **result}
+        conn = result.get("connection", {})
+        return {
+            "status": "connected",
+            "connection_id": conn.get("connection_id") or result.get("connection_id"),
+            "display_name": conn.get("display_name"),
+            **result,
+        }
     except Exception as exc:
         error_id = str(uuid.uuid4())[:8]
         logger.error(

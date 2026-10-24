@@ -103,4 +103,9 @@ class SpreadsheetRegistry:
         return connection, spreadsheet
 
     def list(self, principal_id: str) -> List[Dict[str, Any]]:
+        if self.default_spreadsheet_id:
+            try:
+                self.ensure_default(principal_id)
+            except Exception:
+                pass
         return database.list_spreadsheet_connections(principal_id)
